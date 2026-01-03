@@ -57,7 +57,7 @@ jobs:
         echo "=========================================="
         echo "Running Emulator on simple_boot.bin"
         echo "=========================================="
-        python3 emulator.py simple_boot.bin -o trace_simple.txt -d 0x00
+        python3 emulator.py simple_boot.bin -d 0x00
 
     - name: Run emulator on IVT test bootloader
       run: |
@@ -65,7 +65,7 @@ jobs:
         echo "=========================================="
         echo "Running Emulator on test_ivt.bin"
         echo "=========================================="
-        python3 emulator.py test_ivt.bin -o trace_ivt.txt -d 0x00
+        python3 emulator.py test_ivt.bin -d 0x00
 
     - name: Run emulator on FAT bootloader
       run: |
@@ -73,53 +73,15 @@ jobs:
         echo "=========================================="
         echo "Running Emulator on boot.img (FAT bootloader)"
         echo "=========================================="
-        python3 emulator.py boot.img -o trace_fat.txt -d 0x00
+        python3 emulator.py boot.img -d 0x00
 
     - name: Upload trace artifacts
       uses: actions/upload-artifact@v4
       with:
         name: emulator-traces
         path: |
-          trace_simple.txt
-          trace_ivt.txt
-          trace_fat.txt
+          simple_boot.bin
+          test_ivt.bin
+          boot.img
+          *.log
         retention-days: 30
-
-    - name: Display execution statistics
-      run: |
-        echo ""
-        echo "=========================================="
-        echo "Execution Statistics"
-        echo "=========================================="
-        echo ""
-        echo "Simple bootloader:"
-        echo "  Instructions executed: $(wc -l < trace_simple.txt)"
-        echo "  First 30 instructions:"
-        head -30 trace_simple.txt
-        echo ""
-        echo "=========================================="
-        echo ""
-        echo "IVT test bootloader:"
-        echo "  Instructions executed: $(wc -l < trace_ivt.txt)"
-        echo "  INT 0x10 calls: $(grep -c 'int 0x10' trace_ivt.txt || echo 0)"
-        echo "  INT 0x13 calls: $(grep -c 'int 0x13' trace_ivt.txt || echo 0)"
-        echo ""
-        echo "  First 50 instructions:"
-        head -50 trace_ivt.txt
-        echo ""
-        echo "  Last 20 instructions:"
-        tail -20 trace_ivt.txt
-        echo ""
-        echo "=========================================="
-        echo ""
-        echo "FAT bootloader:"
-        echo "  Instructions executed: $(wc -l < trace_fat.txt)"
-        echo "  INT 0x10 calls: $(grep -c 'int 0x10' trace_fat.txt || echo 0)"
-        echo "  INT 0x13 calls: $(grep -c 'int 0x13' trace_fat.txt || echo 0)"
-        echo "  Memory accesses: $(grep -c 'mem\[' trace_fat.txt || echo 0)"
-        echo ""
-        echo "  First 50 instructions:"
-        head -50 trace_fat.txt
-        echo ""
-        echo "  Last 20 instructions:"
-        tail -20 trace_fat.txt
