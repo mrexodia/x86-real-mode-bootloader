@@ -10,6 +10,7 @@ from unicorn.x86_const import *  # type: ignore
 
 if TYPE_CHECKING:
     from typing import Any
+    from ..logging import EmulatorLogger
 
 
 class BIOSHandler(ABC):
@@ -18,6 +19,15 @@ class BIOSHandler(ABC):
     def __init__(self, emulator: Any):
         """Initialize the handler with a reference to the emulator."""
         self.emu = emulator
+
+    @property
+    def logger(self) -> "EmulatorLogger":
+        """Get the logger from the emulator."""
+        return self.emu.logger
+
+    def log(self, msg: str) -> None:
+        """Log a message to the interrupt log."""
+        self.logger.interrupt(msg)
 
     @abstractmethod
     def handle(self, uc: Uc) -> None:

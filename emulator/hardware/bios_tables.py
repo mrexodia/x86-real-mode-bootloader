@@ -82,10 +82,10 @@ def write_bda_to_memory(emu) -> None:
     bda_bytes = bytes(emu.bda)
     assert len(bda_bytes) == 256, f"Invalid BDA size: {len(bda_bytes)}"
     emu.mem_write(0x400, bda_bytes)
-    print(f"[*] Initialized BIOS Data Area (BDA) at 0x00400 ({len(bda_bytes)} bytes)")
-    print(f"    Equipment: 0x{emu.bda.equipment_list:04X}")
-    print(f"    Memory: {emu.bda.memory_size_kb} KB")
-    print(f"    Video: Mode {emu.bda.video_mode}, {emu.bda.video_columns}x{emu.bda.video_rows+1}")
+    emu.logger.console(f"[*] Initialized BIOS Data Area (BDA) at 0x00400 ({len(bda_bytes)} bytes)")
+    emu.logger.console(f"    Equipment: 0x{emu.bda.equipment_list:04X}")
+    emu.logger.console(f"    Memory: {emu.bda.memory_size_kb} KB")
+    emu.logger.console(f"    Video: Mode {emu.bda.video_mode}, {emu.bda.video_columns}x{emu.bda.video_rows+1}")
 
 
 def create_int_stubs(emu) -> None:
@@ -100,7 +100,7 @@ def create_int_stubs(emu) -> None:
 
 def setup_bios_tables(emu) -> None:
     """Initialize BIOS parameter tables and IVT entries."""
-    print("[*] Setting up BIOS parameter tables...")
+    emu.logger.console("[*] Setting up BIOS parameter tables...")
 
     create_bda(emu)
     write_bda_to_memory(emu)
@@ -136,7 +136,7 @@ def setup_bios_tables(emu) -> None:
     DPT_ADDR = 0xFEFC7
     emu.mem_write(DPT_ADDR, bytes(dpt))
     write_ivt_entry(emu, 0x1E, 0xF000, 0xEFC7)
-    print(f"  - INT 0x1E (DPT): {dpt_location} at 0x{DPT_ADDR:05X}")
+    emu.logger.console(f"  - INT 0x1E (DPT): {dpt_location} at 0x{DPT_ADDR:05X}")
 
     if emu.drive_number >= 0x80:
         fdpt = FixedDiskParameterTable()
@@ -156,8 +156,8 @@ def setup_bios_tables(emu) -> None:
         FDPT_ADDR = 0xFE401
         emu.mem_write(FDPT_ADDR, bytes(fdpt))
         write_ivt_entry(emu, 0x41, 0xF000, 0xE401)
-        print(f"  - INT 0x41 (FDPT): Drive 0x{emu.drive_number:02X} at 0x{FDPT_ADDR:05X}")
-        print(f"    Geometry: {emu.cylinders}C x {emu.heads}H x {emu.sectors_per_track}S")
+        emu.logger.console(f"  - INT 0x41 (FDPT): Drive 0x{emu.drive_number:02X} at 0x{FDPT_ADDR:05X}")
+        emu.logger.console(f"    Geometry: {emu.cylinders}C x {emu.heads}H x {emu.sectors_per_track}S")
 
         write_ivt_entry(emu, 0x42, 0x0000, 0x0000)
     else:

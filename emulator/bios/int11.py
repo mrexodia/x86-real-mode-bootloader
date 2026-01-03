@@ -14,12 +14,10 @@ class Int11Handler(BIOSHandler):
     def handle(self, uc: Uc) -> None:
         """Return equipment list from BDA."""
         emu = self.emu
-        if emu.verbose:
-            print("[INT 0x11] Get equipment list")
+        self.log("[INT 0x11] Get equipment list")
         # AX = equipment list word
 
         equipment = emu.bda.equipment_list
-        if emu.verbose:
-            print(f"  - Equipment from BDA: 0x{equipment:04X}")
+        self.log(f"  - Equipment from BDA: 0x{equipment:04X}")
 
         uc.reg_write(UC_X86_REG_AX, equipment)

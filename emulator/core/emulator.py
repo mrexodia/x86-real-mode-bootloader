@@ -22,6 +22,7 @@ from capstone.x86_const import *  # type: ignore
 
 from ..bios import BIOSServices
 from ..tracing import LegacyInstructionTracer
+from ..logging import EmulatorLogger
 
 from ..hardware.memory import BIOSDataArea
 from ..hardware.ivt import IVT_NAMES
@@ -37,7 +38,6 @@ class BootloaderEmulator:
         self,
         disk_image_path,
         max_instructions: int = 1000000,
-        trace_file: str = "trace.txt",
         verbose: bool = True,
         geometry=None,
         floppy_type=None,
@@ -46,7 +46,6 @@ class BootloaderEmulator:
         """Initialize the emulator."""
         self.disk_image_path = Path(disk_image_path)
         self.max_instructions = max_instructions
-        self.trace_file = trace_file
         self.verbose = verbose
         self.drive_number = drive_number
         self.manual_geometry = geometry
@@ -65,8 +64,11 @@ class BootloaderEmulator:
         self.memory_base = 0x0000
         self.memory_size = 0x100000  # 1 MB
 
+        # Initialize logger
+        self.logger = EmulatorLogger(str(disk_image_path), verbose)
+
         # Initialize Unicorn for x86 16-bit real mode
-        print("[*] Initializing Unicorn Engine (x86 16-bit real mode)...")
+        self.logger.console("[*] Initializing Unicorn Engine (x86 16-bit real mode)...")
         self.uc = Uc(UC_ARCH_X86, UC_MODE_16)
 
         # Initialize Capstone for disassembly
@@ -75,8 +77,8 @@ class BootloaderEmulator:
 
         # Execution tracking
         self.instruction_count = 0
+        self.interrupt_count = 0
         self.uninitialized_count = 0
-        self.trace_output = None
         self.last_exception = None
         self.screen_output = ""
 
@@ -92,7 +94,7 @@ class BootloaderEmulator:
 
     def setup_memory(self):
         """Set up memory regions for the emulator."""
-        print("[*] Setting up memory...")
+        self.logger.console("[*] Setting up memory...")
 
         # Map main memory (1 MB for real mode)
         self.uc.mem_map(self.memory_base, self.memory_size, UC_PROT_ALL)
@@ -100,7 +102,7 @@ class BootloaderEmulator:
         # Zero out memory
         self.mem_write(self.memory_base, b"\x00" * self.memory_size)
 
-        print(f"  - Mapped {self.memory_size // 1024} KB at 0x{self.memory_base:08X}")
+        self.logger.console(f"  - Mapped {self.memory_size // 1024} KB at 0x{self.memory_base:08X}")
 
     def detect_geometry(self):
         """Populate geometry fields from the loaded :class:`~DiskImage` instance."""
@@ -122,7 +124,7 @@ class BootloaderEmulator:
 
     def load_disk_image(self):
         """Load the disk image and detect geometry."""
-        print(f"[*] Loading disk image from {self.disk_image_path}...")
+        self.logger.console(f"[*] Loading disk image from {self.disk_image_path}...")
 
         try:
             self.disk = DiskImage(
@@ -133,22 +135,22 @@ class BootloaderEmulator:
             )
             self.disk.open()
         except FileNotFoundError:
-            print(f"Error: Disk image not found: {self.disk_image_path}")
+            self.logger.console(f"Error: Disk image not found: {self.disk_image_path}")
             sys.exit(1)
         except Exception as e:
-            print(f"Error: Failed to load disk image: {e}")
+            self.logger.console(f"Error: Failed to load disk image: {e}")
             sys.exit(1)
 
         self.disk_size = self.disk.size
-        print(f"  - Disk image size: {self.disk_size} bytes ({self.disk_size // 1024} KB)")
+        self.logger.console(f"  - Disk image size: {self.disk_size} bytes ({self.disk_size // 1024} KB)")
 
         self.detect_geometry()
-        print("[*] Disk geometry:")
-        print(f"  - Cylinders: {self.cylinders}")
-        print(f"  - Heads: {self.heads}")
-        print(f"  - Sectors/Track: {self.sectors_per_track}")
-        print(f"  - Total Sectors: {self.disk_size // 512}")
-        print(f"  - Method: {self.geometry_method}")
+        self.logger.console("[*] Disk geometry:")
+        self.logger.console(f"  - Cylinders: {self.cylinders}")
+        self.logger.console(f"  - Heads: {self.heads}")
+        self.logger.console(f"  - Sectors/Track: {self.sectors_per_track}")
+        self.logger.console(f"  - Total Sectors: {self.disk_size // 512}")
+        self.logger.console(f"  - Method: {self.geometry_method}")
 
     def mem_write(self, address: int, data: bytes | bytearray):
         self.uc.mem_write(address, bytes(data))
@@ -164,20 +166,20 @@ class BootloaderEmulator:
 
     def load_bootloader(self):
         """Load the bootloader from the first 512 bytes of disk image at 0x7C00."""
-        print("[*] Loading bootloader from disk image...")
+        self.logger.console("[*] Loading bootloader from disk image...")
 
         bootloader_code = self.sector_read(0)
-        print("  - Loaded boot sector from disk image (512 bytes)")
+        self.logger.console("  - Loaded boot sector from disk image (512 bytes)")
 
         signature = struct.unpack('<H', bootloader_code[510:512])[0]
         if signature == 0xAA55:
-            print(f"  ✓ Valid boot signature: 0x{signature:04X}")
+            self.logger.console(f"  ✓ Valid boot signature: 0x{signature:04X}")
         else:
-            print(f"  ⚠ Warning: Invalid boot signature: 0x{signature:04X} (expected 0xAA55)")
+            self.logger.console(f"  ⚠ Warning: Invalid boot signature: 0x{signature:04X} (expected 0xAA55)")
             sys.exit(1)
 
         self.mem_write(self.boot_address, bootloader_code)
-        print(f"  - Loaded at 0x{self.boot_address:04X}")
+        self.logger.console(f"  - Loaded at 0x{self.boot_address:04X}")
 
     def create_bda(self):
         """Create and initialize BIOS Data Area."""
@@ -193,7 +195,7 @@ class BootloaderEmulator:
 
     def setup_cpu_state(self):
         """Initialize CPU registers for boot."""
-        print("[*] Setting up CPU state...")
+        self.logger.console("[*] Setting up CPU state...")
 
         self.uc.reg_write(UC_X86_REG_IP, self.boot_address)
 
@@ -211,14 +213,14 @@ class BootloaderEmulator:
         for reg in [UC_X86_REG_AX, UC_X86_REG_BX, UC_X86_REG_CX, UC_X86_REG_SI, UC_X86_REG_DI, UC_X86_REG_BP]:
             self.uc.reg_write(reg, 0x0000)
 
-        print(f"  - CS:IP: 0x{0x0000:04X}:0x{self.boot_address:04X}")
-        print(f"  - SS:SP: 0x{0x0000:04X}:0x{self.boot_address:04X}")
-        print(f"  - DL: 0x{self.drive_number:02X} (drive number)")
+        self.logger.console(f"  - CS:IP: 0x{0x0000:04X}:0x{self.boot_address:04X}")
+        self.logger.console(f"  - SS:SP: 0x{0x0000:04X}:0x{self.boot_address:04X}")
+        self.logger.console(f"  - DL: 0x{self.drive_number:02X} (drive number)")
 
     def hook_mem_invalid(self, uc: Uc, access, address, size, value, _user_data):
         """Hook called on invalid memory access."""
         access_type = "READ" if access == UC_MEM_READ else "WRITE" if access == UC_MEM_WRITE else "EXEC"
-        print(f"\n[!] Invalid memory access: {access_type} at 0x{address:08X} (size: {size})")
+        self.logger.console(f"\n[!] Invalid memory access: {access_type} at 0x{address:08X} (size: {size})")
         self.last_exception = f"Invalid memory {access_type}"
         return False
 
@@ -233,14 +235,9 @@ class BootloaderEmulator:
             f"[{access_type}] 0x{address:04X} | size={size} | int={int_num:02X} | value=0x{value:X} | ip=0x{ip:04X}"
         )
         if int_num in IVT_NAMES:
-            line += f"| name = {IVT_NAMES[int_num]}"
-        line += "\n"
+            line += f" | name={IVT_NAMES[int_num]}"
 
-        if self.trace_output:
-            self.trace_output.write(line)
-
-        if self.verbose:
-            print(line.strip())
+        self.logger.interrupt(line)
 
         return True
 
@@ -250,7 +247,7 @@ class BootloaderEmulator:
             page_index = (bda_offset - 0x50) // 2
             row = (value >> 8) & 0xFF
             col = value & 0xFF
-            print(f"  -> Hardware sync: cursor_pos[{page_index}] = (row={row}, col={col})")
+            self.logger.interrupt(f"  -> Hardware sync: cursor_pos[{page_index}] = (row={row}, col={col})")
             return True
 
         return False
@@ -275,27 +272,19 @@ class BootloaderEmulator:
         else:
             line = f"[{access_type}] 0x{address:04X} | size={size} | value=0x{value:X} | ip=0x{ip:04X} | policy=PASSIVE"
 
-        line += "\n"
-
-        if self.trace_output:
-            self.trace_output.write(line)
-
-        if self.verbose:
-            print(line.strip())
+        self.logger.interrupt(line)
 
         if access == UC_MEM_WRITE:
             if policy == BDAPolicy.DENY:
                 old = uc.mem_read(address, size)
                 uc.mem_write(address, bytes(old))
-                if self.verbose:
-                    print("  -> DENIED (restored old value)")
+                self.logger.interrupt("  -> DENIED (restored old value)")
                 uc.emu_stop()
                 return False
             elif policy == BDAPolicy.BIOS_OWNED:
                 field_name = field_info[0] if field_info else "unknown"
                 if not self.sync_bda_hardware(bda_offset, value, size, field_name):
-                    if self.verbose:
-                        print(f"  -> BIOS_OWNED '{field_name}' not implemented, stopping")
+                    self.logger.interrupt(f"  -> BIOS_OWNED '{field_name}' not implemented, stopping")
                     uc.emu_stop()
                     return False
 
@@ -303,16 +292,14 @@ class BootloaderEmulator:
 
     def run(self):
         """Run the emulator."""
-        print("\n" + "=" * 80)
-        print(f"Starting emulation (trace file: {self.trace_file})...")
-        print("=" * 80 + "\n")
+        self.logger.console("\n" + "=" * 80)
+        self.logger.console(f"Starting emulation...")
+        self.logger.console(f"  - Instructions log: {self.logger.instr_path}")
+        self.logger.console(f"  - Interrupts log: {self.logger.int_path}")
+        self.logger.console("=" * 80 + "\n")
 
-        try:
-            self.trace_output = open(self.trace_file, 'w')
-            print(f"[*] Writing trace to {self.trace_file}")
-        except Exception as e:
-            print(f"[!] Error opening trace file: {e}")
-            return
+        # Open log files
+        self.logger.open()
 
         # Add hooks
         self.uc.hook_add(UC_HOOK_CODE, self.tracer.hook_code)
@@ -343,34 +330,34 @@ class BootloaderEmulator:
 
         except UcError as e:
             error_ip = self.uc.reg_read(UC_X86_REG_IP)
-            print(f"\n[!] Emulation error at IP=0x{error_ip:04X}: {e}")
+            self.logger.console(f"\n[!] Emulation error at IP=0x{error_ip:04X}: {e}")
 
             if e.errno == UC_ERR_INSN_INVALID:
-                print("    Invalid instruction")
+                self.logger.console("    Invalid instruction")
             elif e.errno == UC_ERR_READ_UNMAPPED:
-                print("    Read from unmapped memory")
+                self.logger.console("    Read from unmapped memory")
             elif e.errno == UC_ERR_WRITE_UNMAPPED:
-                print("    Write to unmapped memory")
+                self.logger.console("    Write to unmapped memory")
             elif e.errno == UC_ERR_FETCH_UNMAPPED:
-                print("    Fetch from unmapped memory")
+                self.logger.console("    Fetch from unmapped memory")
 
         finally:
-            if self.trace_output:
-                self.trace_output.close()
+            self.logger.close()
             self.print_summary()
 
     def print_summary(self):
         """Print execution summary."""
-        print("\n" + "=" * 80)
-        print("Emulation Summary")
-        print("=" * 80)
-        print(f"Total instructions executed: {self.instruction_count}")
+        self.logger.console("\n" + "=" * 80)
+        self.logger.console("Emulation Summary")
+        self.logger.console("=" * 80)
+        self.logger.console(f"Total instructions executed: {self.instruction_count}")
+        self.logger.console(f"Total interrupts handled: {self.interrupt_count}")
 
         ip = self.uc.reg_read(UC_X86_REG_IP)
         cs = self.uc.reg_read(UC_X86_REG_CS)
-        print(f"Final CS:IP: {cs:04x}:{ip:04x}")
+        self.logger.console(f"Final CS:IP: {cs:04x}:{ip:04x}")
 
-        print("\nFinal register state:")
+        self.logger.console("\nFinal register state:")
         regs = [
             ('AX', UC_X86_REG_AX),
             ('BX', UC_X86_REG_BX),
@@ -384,9 +371,9 @@ class BootloaderEmulator:
 
         for name, reg in regs:
             value = self.uc.reg_read(reg)
-            print(f"  {name}: 0x{value:04X}")
+            self.logger.console(f"  {name}: 0x{value:04X}")
 
-        print("\nSegment registers:")
+        self.logger.console("\nSegment registers:")
         segs = [
             ('CS', UC_X86_REG_CS),
             ('DS', UC_X86_REG_DS),
@@ -395,20 +382,22 @@ class BootloaderEmulator:
         ]
         for name, reg in segs:
             value = self.uc.reg_read(reg)
-            print(f"  {name}: 0x{value:04X}")
+            self.logger.console(f"  {name}: 0x{value:04X}")
 
-        print(f"\nMemory at boot sector (0x{self.boot_address:04X}):")
+        self.logger.console(f"\nMemory at boot sector (0x{self.boot_address:04X}):")
         try:
             mem = self.uc.mem_read(self.boot_address, 64)
             for i in range(0, 64, 16):
                 offset = self.boot_address + i
                 hex_bytes = ' '.join(f'{b:02X}' for b in mem[i:i + 16])
                 ascii_repr = ''.join(chr(b) if 32 <= b < 127 else '.' for b in mem[i:i + 16])
-                print(f"  0x{offset:04X}: {hex_bytes:48s} | {ascii_repr}")
+                self.logger.console(f"  0x{offset:04X}: {hex_bytes:48s} | {ascii_repr}")
         except Exception as e:
-            print(f"  Error reading memory: {e}")
+            self.logger.console(f"  Error reading memory: {e}")
 
-        print(f"\n[*] Trace written to {self.trace_file}")
-        print(f"    Total instructions: {self.instruction_count}")
+        self.logger.console(f"\n[*] Logs written to:")
+        self.logger.console(f"    Instructions: {self.logger.instr_path}")
+        self.logger.console(f"    Interrupts: {self.logger.int_path}")
+        self.logger.console(f"    Total instructions: {self.instruction_count}")
         if self.screen_output.strip():
-            print(f"\n[*] Screen output:\n{self.screen_output}")
+            self.logger.console(f"\n[*] Screen output:\n{self.screen_output}")

@@ -26,15 +26,9 @@ def main():
         help='Maximum number of instructions to execute (default: 1000000)'
     )
     parser.add_argument(
-        '-o', '--output',
-        type=str,
-        default='trace.txt',
-        help='Output trace file (default: trace.txt)'
-    )
-    parser.add_argument(
         '-q', '--quiet',
         action='store_true',
-        help='Reduce verbosity (only show first 50 instructions)'
+        help='Reduce console verbosity (logs still written to files)'
     )
     parser.add_argument(
         '-g', '--geometry',
@@ -87,7 +81,6 @@ def main():
     emulator = BootloaderEmulator(
         disk_image_path=args.disk_image,
         max_instructions=args.max_instructions,
-        trace_file=args.output,
         verbose=not args.quiet,
         geometry=geometry,
         floppy_type=args.floppy_type,

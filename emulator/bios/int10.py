@@ -30,16 +30,14 @@ class Int10Handler(BIOSHandler):
         elif ah == 0x1B:
             self._get_functionality_state(uc)
         else:
-            if self.emu.verbose:
-                print(f"[INT 0x10] Unhandled function AH=0x{ah:02X}")
+            self.log(f"[INT 0x10] Unhandled function AH=0x{ah:02X}")
             uc.emu_stop()
 
     def _set_video_mode(self, uc: Uc) -> None:
         """AH=0x00: Set video mode."""
         emu = self.emu
         al = uc.reg_read(UC_X86_REG_AX) & 0xFF
-        if emu.verbose:
-            print(f"[INT 0x10] Set video mode: 0x{al:02X}")
+        self.log(f"[INT 0x10] Set video mode: 0x{al:02X}")
 
         # Update BDA video mode field (0x0449)
         if emu.bda:
@@ -63,8 +61,7 @@ class Int10Handler(BIOSHandler):
         dh = (uc.reg_read(UC_X86_REG_DX) >> 8) & 0xFF  # Row
         dl = uc.reg_read(UC_X86_REG_DX) & 0xFF  # Column
 
-        if emu.verbose:
-            print(f"[INT 0x10] Set cursor position: page={bh}, row={dh}, col={dl}")
+        self.log(f"[INT 0x10] Set cursor position: page={bh}, row={dh}, col={dl}")
 
         # Update cursor position in BDA (0x0450 + page*2)
         if emu.bda and bh < 8:  # Only 8 pages
@@ -78,8 +75,7 @@ class Int10Handler(BIOSHandler):
         emu = self.emu
         bh = (uc.reg_read(UC_X86_REG_BX) >> 8) & 0xFF  # Page number
 
-        if emu.verbose:
-            print(f"[INT 0x10] Get cursor position: page={bh}")
+        self.log(f"[INT 0x10] Get cursor position: page={bh}")
 
         # Read cursor position from BDA
         if emu.bda and bh < 8:
@@ -92,8 +88,7 @@ class Int10Handler(BIOSHandler):
             uc.reg_write(UC_X86_REG_DX, (row << 8) | col)
             uc.reg_write(UC_X86_REG_CX, cursor_shape)
 
-            if emu.verbose:
-                print(f"  - Returning: row={row}, col={col}, shape=0x{cursor_shape:04X}")
+            self.log(f"  - Returning: row={row}, col={col}, shape=0x{cursor_shape:04X}")
         else:
             # Default if BDA not available
             uc.reg_write(UC_X86_REG_DX, 0x0000)
@@ -109,15 +104,13 @@ class Int10Handler(BIOSHandler):
             char = "\n"
         else:
             char = chr(al) if 32 <= al < 127 else f"\\x{al:02x}"
-        if emu.verbose:
-            print(f"[INT 0x10] Teletype output: {repr(char)}")
-            emu.screen_output += char
+        self.log(f"[INT 0x10] Teletype output: {repr(char)}")
+        emu.screen_output += char
 
     def _get_video_mode(self, uc: Uc) -> None:
         """AH=0x0F: Get current video mode."""
         emu = self.emu
-        if emu.verbose:
-            print("[INT 0x10] Get current video mode")
+        self.log("[INT 0x10] Get current video mode")
 
         # Read from BDA
         if emu.bda:
@@ -134,15 +127,12 @@ class Int10Handler(BIOSHandler):
         uc.reg_write(UC_X86_REG_AX, (video_columns << 8) | video_mode)
         uc.reg_write(UC_X86_REG_BX, (uc.reg_read(UC_X86_REG_BX) & 0x00FF) | (active_page << 8))
 
-        if emu.verbose:
-            print(f"  - Returning: mode=0x{video_mode:02X}, columns={video_columns}, page={active_page}")
+        self.log(f"  - Returning: mode=0x{video_mode:02X}, columns={video_columns}, page={active_page}")
 
     def _get_display_combination_code(self, uc: Uc) -> None:
         """AH=0x1A: Get Display Combination Code."""
-        emu = self.emu
         al = uc.reg_read(UC_X86_REG_AX) & 0xFF
-        if emu.verbose:
-            print(f"[INT 0x10] Get Display Combination Code: AL=0x{al:02X}")
+        self.log(f"[INT 0x10] Get Display Combination Code: AL=0x{al:02X}")
 
         # Return: AL=0x1A (function supported), BL=display combination code
         # Display combination code 0x08 = VGA with color display
@@ -152,16 +142,13 @@ class Int10Handler(BIOSHandler):
         # Clear CF (success)
         self.clear_carry(uc)
 
-        if emu.verbose:
-            print("  - Returning: AL=0x1A, BL=0x08 (VGA color)")
+        self.log("  - Returning: AL=0x1A, BL=0x08 (VGA color)")
 
     def _get_functionality_state(self, uc: Uc) -> None:
         """AH=0x1B: Get Functionality/State Information."""
-        emu = self.emu
         al = uc.reg_read(UC_X86_REG_AX) & 0xFF
         bx = uc.reg_read(UC_X86_REG_BX) & 0xFF
-        if emu.verbose:
-            print(f"[INT 0x10] Get Functionality/State Information: AL=0x{al:02X}, BL=0x{bx:02X}")
+        self.log(f"[INT 0x10] Get Functionality/State Information: AL=0x{al:02X}, BL=0x{bx:02X}")
 
         if bx == 0x00:
             # Return functionality state information

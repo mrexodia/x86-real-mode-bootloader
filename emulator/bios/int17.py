@@ -26,28 +26,24 @@ class Int17Handler(BIOSHandler):
         elif ah == 0x02:
             self._get_status(uc, dx)
         else:
-            if self.emu.verbose:
-                print(f"[INT 0x17] Unhandled function AH=0x{ah:02X}")
+            self.log(f"[INT 0x17] Unhandled function AH=0x{ah:02X}")
             uc.emu_stop()
 
     def _print_character(self, uc: Uc, printer: int) -> None:
         """AH=0x00: Print character."""
-        if self.emu.verbose:
-            al = uc.reg_read(UC_X86_REG_AX) & 0xFF
-            print(f"[INT 0x17] Print character 0x{al:02X} to printer {printer} (OFFLINE)")
+        al = uc.reg_read(UC_X86_REG_AX) & 0xFF
+        self.log(f"[INT 0x17] Print character 0x{al:02X} to printer {printer} (OFFLINE)")
         uc.reg_write(UC_X86_REG_AX, (uc.reg_read(UC_X86_REG_AX) & 0xFF) | (self.OFFLINE_STATUS << 8))
         self.set_carry(uc)
 
     def _initialize_printer(self, uc: Uc, printer: int) -> None:
         """AH=0x01: Initialize printer."""
-        if self.emu.verbose:
-            print(f"[INT 0x17] Initialize printer {printer} (OFFLINE)")
+        self.log(f"[INT 0x17] Initialize printer {printer} (OFFLINE)")
         uc.reg_write(UC_X86_REG_AX, (uc.reg_read(UC_X86_REG_AX) & 0xFF) | (self.OFFLINE_STATUS << 8))
         self.set_carry(uc)
 
     def _get_status(self, uc: Uc, printer: int) -> None:
         """AH=0x02: Get printer status."""
-        if self.emu.verbose:
-            print(f"[INT 0x17] Get printer status for printer {printer} (OFFLINE)")
+        self.log(f"[INT 0x17] Get printer status for printer {printer} (OFFLINE)")
         uc.reg_write(UC_X86_REG_AX, (uc.reg_read(UC_X86_REG_AX) & 0xFF) | (self.OFFLINE_STATUS << 8))
         self.set_carry(uc)

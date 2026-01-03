@@ -44,10 +44,18 @@ class BIOSServices:
             0x1A: Int1AHandler(emulator),
         }
 
+    @property
+    def logger(self):
+        """Get the logger from the emulator."""
+        return self.emu.logger
+
     def handle_bios_interrupt(self, uc: Uc, intno: int):
         """Route interrupt to appropriate BIOS service handler."""
         emu = self.emu
-        print(f"[*] Handling BIOS interrupt 0x{intno:02X} -> {IVT_NAMES.get(intno, 'Unknown')}")
+        emu.interrupt_count += 1
+        
+        int_name = IVT_NAMES.get(intno, 'Unknown')
+        self.logger.interrupt(f"[INT #{emu.interrupt_count}] 0x{intno:02X} -> {int_name}")
         self._dump_registers(uc, intno, "BEFORE")
 
         handler = self._handlers.get(intno)
@@ -56,8 +64,7 @@ class BIOSServices:
         else:
             # Unhandled BIOS interrupt
             ip = uc.reg_read(UC_X86_REG_IP)
-            if emu.verbose:
-                print(f"[INT] Unhandled BIOS interrupt 0x{intno:02X} at 0x{ip:04X}")
+            self.logger.interrupt(f"[INT] Unhandled BIOS interrupt 0x{intno:02X} at 0x{ip:04X}")
             uc.emu_stop()
 
         self._dump_registers(uc, intno, "AFTER")
@@ -79,8 +86,8 @@ class BIOSServices:
         flags = uc.reg_read(UC_X86_REG_EFLAGS)
         cf = (flags >> 0) & 1
         zf = (flags >> 6) & 1
-        print(
-            f"[DEBUG] INT 0x{intno:02X} {label}: ax={ax:04x} bx={bx:04x} cx={cx:04x} dx={dx:04x} "
+        self.logger.interrupt(
+            f"  [{label}] ax={ax:04x} bx={bx:04x} cx={cx:04x} dx={dx:04x} "
             f"si={si:04x} di={di:04x} bp={bp:04x} sp={sp:04x} cs={cs:04x} ds={ds:04x} "
             f"ss={ss:04x} es={es:04x} flags={flags:04x} cf={cf} zf={zf}"
         )

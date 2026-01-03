@@ -126,15 +126,18 @@ class LegacyInstructionTracer:
 
     def hook_code(self, uc: Uc, address: int, size: int, _user_data: Any):
         """Hook called before each instruction execution."""
+        emu = self.emu
+        logger = emu.logger
+
         try:
-            self.emu.instruction_count += 1
+            emu.instruction_count += 1
 
             cs = uc.reg_read(UC_X86_REG_CS)
             ip = uc.reg_read(UC_X86_REG_IP)
             physical_addr = (cs << 4) + ip
 
             if address != physical_addr:
-                print(f"\n[*] Physical address mismatch: {hex(address)} != {hex(physical_addr)} ({cs:04x}:{ip:04x})")
+                logger.console(f"\n[*] Physical address mismatch: {hex(address)} != {hex(physical_addr)} ({cs:04x}:{ip:04x})")
                 uc.emu_stop()
 
             # Read instruction bytes
@@ -145,18 +148,18 @@ class LegacyInstructionTracer:
 
             # Disassemble instruction
             try:
-                instr = next(Cs.disasm(self.emu.cs, code, ip, 1))
+                instr = next(Cs.disasm(emu.cs, code, ip, 1))
                 code = code[:instr.size]
             except StopIteration:
                 instr = None  # Unsupported instruction
 
             if code == b"\x00\x00":  # possibly uninitialized memory
-                self.emu.uninitialized_count += 1
+                emu.uninitialized_count += 1
             else:
-                self.emu.uninitialized_count = 0
+                emu.uninitialized_count = 0
 
-            if self.emu.uninitialized_count >= 5:
-                print("\n[*] Detected possible uninitialized memory usage (5 consecutive 0000 instructions)")
+            if emu.uninitialized_count >= 5:
+                logger.console("\n[*] Detected possible uninitialized memory usage (5 consecutive 0000 instructions)")
                 uc.emu_stop()
 
             # Build trace line: address|instruction|registers
@@ -213,39 +216,33 @@ class LegacyInstructionTracer:
                     ret_address = address + instr.size
                     line += f"|return_address=0x{ret_address:x}"
 
-                # Special handling for interrupts
+                # Special handling for interrupts - include next interrupt count
                 elif instr.id == X86_INS_INT:
                     # Get interrupt number from operand
                     if len(instr.operands) > 0 and instr.operands[0].type == X86_OP_IMM:
                         int_num = instr.operands[0].value.imm
-                        line += f"|int=0x{int_num:x}"
+                        # Show the count that will be assigned to this interrupt
+                        line += f"|int=0x{int_num:x}|int_count={emu.interrupt_count + 1}"
             else:
                 line += f"??? (code: {code.hex()}, size: 0x{size:x})"
 
-            line += "\n"
-
-            # Write to trace file
-            if self.emu.trace_output:
-                self.emu.trace_output.write(line)
-
-            # Optionally print to console (all instructions in verbose mode)
-            if self.emu.verbose:
-                print(line.rstrip())
+            # Write to instruction log
+            logger.instruction(line)
 
             # Check instruction limit
-            if self.emu.instruction_count >= self.emu.max_instructions:
-                print(f"\n[*] Reached maximum instruction limit ({self.emu.max_instructions})")
+            if emu.instruction_count >= emu.max_instructions:
+                logger.console(f"\n[*] Reached maximum instruction limit ({emu.max_instructions})")
                 uc.emu_stop()
 
             if code == b"\xeb\xfe":
-                print("\n[*] Infinite loop detected!")
+                logger.console("\n[*] Infinite loop detected!")
                 uc.emu_stop()
 
         except (KeyboardInterrupt, SystemExit):
-            print("\n[!] Interrupted by user")
+            logger.console("\n[!] Interrupted by user")
             uc.emu_stop()
         except Exception as e:
-            print(f"\n[!] Error in hook_code: {e}")
+            logger.console(f"\n[!] Error in hook_code: {e}")
             import traceback
 
             traceback.print_exc()

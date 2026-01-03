@@ -32,14 +32,12 @@ class Int1AHandler(BIOSHandler):
         elif ah == 0x07:
             self._reset_rtc_alarm(uc)
         else:
-            if self.emu.verbose:
-                print(f"[INT 0x1A] Unhandled function AH=0x{ah:02X}")
+            self.log(f"[INT 0x1A] Unhandled function AH=0x{ah:02X}")
             uc.emu_stop()
 
     def _get_system_time(self, uc: Uc) -> None:
         """AH=0x00: Get system time."""
-        if self.emu.verbose:
-            print("[INT 0x1A] Get system time")
+        self.log("[INT 0x1A] Get system time")
         ticks = 65536 * 2  # ~2 hours worth of ticks
         cx = (ticks >> 16) & 0xFFFF
         dx = ticks & 0xFFFF
@@ -51,16 +49,14 @@ class Int1AHandler(BIOSHandler):
 
     def _set_system_time(self, uc: Uc) -> None:
         """AH=0x01: Set system time."""
-        if self.emu.verbose:
-            cx = uc.reg_read(UC_X86_REG_CX)
-            dx = uc.reg_read(UC_X86_REG_DX)
-            print(f"[INT 0x1A] Set system time CX:DX=0x{cx:04X}:0x{dx:04X}")
+        cx = uc.reg_read(UC_X86_REG_CX)
+        dx = uc.reg_read(UC_X86_REG_DX)
+        self.log(f"[INT 0x1A] Set system time CX:DX=0x{cx:04X}:0x{dx:04X}")
         self.clear_carry(uc)
 
     def _get_rtc_time(self, uc: Uc) -> None:
         """AH=0x02: Get RTC time."""
-        if self.emu.verbose:
-            print("[INT 0x1A] Get RTC time")
+        self.log("[INT 0x1A] Get RTC time")
         hours_bcd = 0x08
         minutes_bcd = 0x30
         seconds_bcd = 0x45
@@ -71,16 +67,14 @@ class Int1AHandler(BIOSHandler):
 
     def _set_rtc_time(self, uc: Uc) -> None:
         """AH=0x03: Set RTC time."""
-        if self.emu.verbose:
-            cx = uc.reg_read(UC_X86_REG_CX)
-            dx = uc.reg_read(UC_X86_REG_DX)
-            print(f"[INT 0x1A] Set RTC time CX=0x{cx:04X}, DX=0x{dx:04X}")
+        cx = uc.reg_read(UC_X86_REG_CX)
+        dx = uc.reg_read(UC_X86_REG_DX)
+        self.log(f"[INT 0x1A] Set RTC time CX=0x{cx:04X}, DX=0x{dx:04X}")
         self.clear_carry(uc)
 
     def _get_rtc_date(self, uc: Uc) -> None:
         """AH=0x04: Get RTC date."""
-        if self.emu.verbose:
-            print("[INT 0x1A] Get RTC date")
+        self.log("[INT 0x1A] Get RTC date")
         year_bcd = 0x1990
         month_bcd = 0x01
         day_bcd = 0x15
@@ -90,20 +84,17 @@ class Int1AHandler(BIOSHandler):
 
     def _set_rtc_date(self, uc: Uc) -> None:
         """AH=0x05: Set RTC date."""
-        if self.emu.verbose:
-            cx = uc.reg_read(UC_X86_REG_CX)
-            dx = uc.reg_read(UC_X86_REG_DX)
-            print(f"[INT 0x1A] Set RTC date CX=0x{cx:04X}, DX=0x{dx:04X}")
+        cx = uc.reg_read(UC_X86_REG_CX)
+        dx = uc.reg_read(UC_X86_REG_DX)
+        self.log(f"[INT 0x1A] Set RTC date CX=0x{cx:04X}, DX=0x{dx:04X}")
         self.clear_carry(uc)
 
     def _set_rtc_alarm(self, uc: Uc) -> None:
         """AH=0x06: Set RTC alarm."""
-        if self.emu.verbose:
-            print("[INT 0x1A] Set RTC alarm")
+        self.log("[INT 0x1A] Set RTC alarm")
         self.clear_carry(uc)
 
     def _reset_rtc_alarm(self, uc: Uc) -> None:
         """AH=0x07: Reset RTC alarm."""
-        if self.emu.verbose:
-            print("[INT 0x1A] Reset RTC alarm")
+        self.log("[INT 0x1A] Reset RTC alarm")
         self.clear_carry(uc)

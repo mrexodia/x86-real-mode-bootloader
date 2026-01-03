@@ -28,22 +28,19 @@ class Int15Handler(BIOSHandler):
         elif ah == 0x53:
             self._apm_function(uc)
         else:
-            if self.emu.verbose:
-                print(f"[INT 0x15] Unhandled function AH=0x{ah:02X}")
+            self.log(f"[INT 0x15] Unhandled function AH=0x{ah:02X}")
             uc.emu_stop()
 
     def _get_extended_memory(self, uc: Uc) -> None:
         """AH=0x88: Get extended memory size."""
-        if self.emu.verbose:
-            print("[INT 0x15] Get extended memory size")
+        self.log("[INT 0x15] Get extended memory size")
         # AX = extended memory in KB (above 1MB)
         uc.reg_write(UC_X86_REG_AX, 0)  # No extended memory
         self.clear_carry(uc)
 
     def _get_system_config(self, uc: Uc) -> None:
         """AH=0xC0: Get system configuration."""
-        if self.emu.verbose:
-            print("[INT 0x15] Get system configuration")
+        self.log("[INT 0x15] Get system configuration")
         # For now, return error
         self.set_carry(uc)
 
@@ -53,13 +50,11 @@ class Int15Handler(BIOSHandler):
         if al == 0x20:
             self._e820_memory_map(uc)
         else:
-            if self.emu.verbose:
-                print(f"[INT 0x15] Unhandled E8h subfunction AL=0x{al:02X}")
+            self.log(f"[INT 0x15] Unhandled E8h subfunction AL=0x{al:02X}")
             self.set_carry(uc)
 
     def _e820_memory_map(self, uc: Uc) -> None:
         """E820h: Query System Address Map."""
-        emu = self.emu
         edx = uc.reg_read(UC_X86_REG_EDX)
         ebx = uc.reg_read(UC_X86_REG_EBX)
         es = uc.reg_read(UC_X86_REG_ES)
@@ -67,8 +62,7 @@ class Int15Handler(BIOSHandler):
 
         # Check for SMAP signature
         if edx != 0x534D4150:  # 'SMAP'
-            if emu.verbose:
-                print(f"[INT 0x15, E820] Invalid signature: 0x{edx:08X}")
+            self.log(f"[INT 0x15, E820] Invalid signature: 0x{edx:08X}")
             self.set_carry(uc)
             return
 
@@ -85,18 +79,16 @@ class Int15Handler(BIOSHandler):
 
         if entry_index >= len(memory_map):
             # No more entries
-            if emu.verbose:
-                print(f"[INT 0x15, E820] No more entries (index={entry_index})")
+            self.log(f"[INT 0x15, E820] No more entries (index={entry_index})")
             self.set_carry(uc)
             return
 
         base_low, base_high, length_low, length_high, mem_type = memory_map[entry_index]
 
-        if emu.verbose:
-            print(
-                f"[INT 0x15, E820] Entry {entry_index}: base=0x{base_high:08X}{base_low:08X}, "
-                f"length=0x{length_high:08X}{length_low:08X}, type={mem_type}"
-            )
+        self.log(
+            f"[INT 0x15, E820] Entry {entry_index}: base=0x{base_high:08X}{base_low:08X}, "
+            f"length=0x{length_high:08X}{length_low:08X}, type={mem_type}"
+        )
 
         # Write entry to ES:DI
         addr = (es << 4) + di
@@ -119,13 +111,11 @@ class Int15Handler(BIOSHandler):
 
     def _wait_external_event(self, uc: Uc) -> None:
         """AH=0x41: Wait on external event (unsupported)."""
-        if self.emu.verbose:
-            print("[INT 0x15] Wait on external event (unsupported)")
+        self.log("[INT 0x15] Wait on external event (unsupported)")
         self.set_carry(uc)
 
     def _apm_function(self, uc: Uc) -> None:
         """AH=0x53: APM BIOS function."""
         ah = (uc.reg_read(UC_X86_REG_AX) >> 8) & 0xFF
-        if self.emu.verbose:
-            print(f"[INT 0x15] APM BIOS function AH=0x{ah:02X}")
+        self.log(f"[INT 0x15] APM BIOS function AH=0x{ah:02X}")
         self.set_carry(uc)

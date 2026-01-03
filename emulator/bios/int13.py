@@ -42,8 +42,7 @@ class Int13Handler(BIOSHandler):
 
         # Validate drive number for most operations
         if ah not in [0x00, 0x08, 0x15, 0x41, 0x42, 0x48] and dl != emu.drive_number:
-            if emu.verbose:
-                print(f"[INT 0x13] Function AH=0x{ah:02X} for drive 0x{dl:02X} - drive not found")
+            self.log(f"[INT 0x13] Function AH=0x{ah:02X} for drive 0x{dl:02X} - drive not found")
             ret_ah = 0x80  # Drive not ready/timeout
             error = True
 
@@ -84,8 +83,7 @@ class Int13Handler(BIOSHandler):
             ret_ah = self._get_extended_parameters(uc, ds, si, dl)
 
         else:
-            if emu.verbose:
-                print(f"[INT 0x13] Unhandled function AH=0x{ah:02X}")
+            self.log(f"[INT 0x13] Unhandled function AH=0x{ah:02X}")
             uc.emu_stop()
             return
 
@@ -100,14 +98,12 @@ class Int13Handler(BIOSHandler):
 
     def _reset_disk(self, uc: Uc, dl: int) -> int:
         """AH=0x00: Reset disk system."""
-        if self.emu.verbose:
-            print(f"[INT 0x13] Reset disk system for drive 0x{dl:02X}")
+        self.log(f"[INT 0x13] Reset disk system for drive 0x{dl:02X}")
         return 0x00
 
     def _get_status(self, uc: Uc, dl: int) -> tuple[int, int]:
         """AH=0x01: Get disk status."""
-        if self.emu.verbose:
-            print(f"[INT 0x13] Get disk status for drive 0x{dl:02X}")
+        self.log(f"[INT 0x13] Get disk status for drive 0x{dl:02X}")
         return 0x00, 0x00  # ret_ah, ret_al
 
     def _read_sectors(self, uc: Uc, ch: int, cl: int, dh: int, dl: int, 
@@ -119,40 +115,34 @@ class Int13Handler(BIOSHandler):
         head = dh
         buffer_addr = (es << 4) + bx
 
-        if emu.verbose:
-            print(f"[INT 0x13] Read sectors (CHS) for drive 0x{dl:02X}")
-            print(f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_read}")
-            print(f"  - Buffer: 0x{es:04X}:0x{bx:04X} (0x{buffer_addr:05X})")
+        self.log(f"[INT 0x13] Read sectors (CHS) for drive 0x{dl:02X}")
+        self.log(f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_read}")
+        self.log(f"  - Buffer: 0x{es:04X}:0x{bx:04X} (0x{buffer_addr:05X})")
 
         # Validate CHS values
         if sector == 0 or sector > emu.sectors_per_track:
-            if emu.verbose:
-                print(f"  ⚠ Invalid sector: {sector} (valid: 1-{emu.sectors_per_track})")
+            self.log(f"  ⚠ Invalid sector: {sector} (valid: 1-{emu.sectors_per_track})")
             return 0x04, 0x00, True  # Sector not found
 
         if cylinder >= emu.cylinders or head >= emu.heads:
-            if emu.verbose:
-                print(f"  ⚠ Invalid CHS: C={cylinder} H={head} (max: {emu.cylinders-1}C, {emu.heads-1}H)")
+            self.log(f"  ⚠ Invalid CHS: C={cylinder} H={head} (max: {emu.cylinders-1}C, {emu.heads-1}H)")
             return 0x04, 0x00, True  # Sector not found
 
         lba = (cylinder * emu.heads + head) * emu.sectors_per_track + (sector - 1)
 
-        if emu.verbose:
-            print(f"  - Converted to LBA: {lba}")
+        self.log(f"  - Converted to LBA: {lba}")
 
         disk_offset = lba * 512
         bytes_to_read = sectors_to_read * 512
 
         if disk_offset + bytes_to_read > emu.disk_size:
-            if emu.verbose:
-                print("  ⚠ Read beyond disk image!")
+            self.log("  ⚠ Read beyond disk image!")
             return 0x04, 0x00, True  # Sector not found
 
         for i in range(sectors_to_read):
             sector_data = emu.sector_read(lba + i)
-            if emu.verbose:
-                print(f"  ✓ Read {bytes_to_read} bytes from LBA {lba} to 0x{buffer_addr:05X}")
-                print(f"  - Data (32 bytes): {sector_data[:32].hex(' ')}")
+            self.log(f"  ✓ Read {bytes_to_read} bytes from LBA {lba} to 0x{buffer_addr:05X}")
+            self.log(f"  - Data (32 bytes): {sector_data[:32].hex(' ')}")
             emu.mem_write(buffer_addr + i * 512, sector_data)
 
         return 0x00, sectors_to_read, False  # Success
@@ -166,34 +156,29 @@ class Int13Handler(BIOSHandler):
         head = dh
         buffer_addr = (es << 4) + bx
 
-        if emu.verbose:
-            print(f"[INT 0x13] Write sectors (CHS) for drive 0x{dl:02X}")
-            print(f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_write}")
-            print(f"  - Buffer: 0x{es:04X}:0x{bx:04X} (0x{buffer_addr:05X})")
+        self.log(f"[INT 0x13] Write sectors (CHS) for drive 0x{dl:02X}")
+        self.log(f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_write}")
+        self.log(f"  - Buffer: 0x{es:04X}:0x{bx:04X} (0x{buffer_addr:05X})")
 
         lba = (cylinder * emu.heads + head) * emu.sectors_per_track + (sector - 1)
 
-        if emu.verbose:
-            print(f"  - Converted to LBA: {lba}")
+        self.log(f"  - Converted to LBA: {lba}")
 
         disk_offset = lba * 512
         bytes_to_write = sectors_to_write * 512
 
         if disk_offset + bytes_to_write > emu.disk_size:
-            if emu.verbose:
-                print("  ⚠ Write beyond disk image!")
+            self.log("  ⚠ Write beyond disk image!")
             return 0x04, 0x00, True  # Sector not found
 
         data = uc.mem_read(buffer_addr, bytes_to_write)
         for i in range(sectors_to_write):
             sector_data = data[i * 512:(i + 1) * 512]
-            if emu.verbose:
-                print(f"    - Writing sector {i+1}/{sectors_to_write} to LBA {lba + i}")
+            self.log(f"    - Writing sector {i+1}/{sectors_to_write} to LBA {lba + i}")
             emu.sector_write(lba + i, sector_data)
 
-        if emu.verbose:
-            print(f"  ✓ Wrote {bytes_to_write} bytes to LBA {lba} from 0x{buffer_addr:05X}")
-            print(f"  - Data (32 bytes): {bytes(data[:32]).hex(' ')}")
+        self.log(f"  ✓ Wrote {bytes_to_write} bytes to LBA {lba} from 0x{buffer_addr:05X}")
+        self.log(f"  - Data (32 bytes): {bytes(data[:32]).hex(' ')}")
 
         return 0x00, sectors_to_write, False  # Success
 
@@ -205,9 +190,8 @@ class Int13Handler(BIOSHandler):
         sector = cl & 0x3F
         head = dh
 
-        if emu.verbose:
-            print(f"[INT 0x13] Verify sectors (CHS) for drive 0x{dl:02X}")
-            print(f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_verify}")
+        self.log(f"[INT 0x13] Verify sectors (CHS) for drive 0x{dl:02X}")
+        self.log(f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_verify}")
 
         lba = (cylinder * emu.heads + head) * emu.sectors_per_track + (sector - 1)
         disk_offset = lba * 512
@@ -221,8 +205,7 @@ class Int13Handler(BIOSHandler):
     def _get_drive_parameters(self, uc: Uc, dl: int) -> tuple[int, bool]:
         """AH=0x08: Get drive parameters - WRITES CX/DX."""
         emu = self.emu
-        if emu.verbose:
-            print(f"[INT 0x13] Get drive parameters for drive 0x{dl:02X}")
+        self.log(f"[INT 0x13] Get drive parameters for drive 0x{dl:02X}")
 
         if dl < 0x80:  # Floppy
             return 0x01, True  # Invalid parameter for now
@@ -238,9 +221,8 @@ class Int13Handler(BIOSHandler):
         uc.reg_write(UC_X86_REG_CX, cx_value)
         uc.reg_write(UC_X86_REG_DX, dx_value)
 
-        if emu.verbose:
-            print(f"  - Returning geometry: C={emu.cylinders}, H={emu.heads}, S={emu.sectors_per_track}")
-            print(f"  - CX=0x{cx_value:04X}, DX=0x{dx_value:04X}")
+        self.log(f"  - Returning geometry: C={emu.cylinders}, H={emu.heads}, S={emu.sectors_per_track}")
+        self.log(f"  - CX=0x{cx_value:04X}, DX=0x{dx_value:04X}")
 
         return 0x00, False  # Success
 
@@ -250,9 +232,8 @@ class Int13Handler(BIOSHandler):
         cylinder = ch | ((cl & 0xC0) << 2)
         head = dh
 
-        if emu.verbose:
-            print(f"[INT 0x13] Seek to track for drive 0x{dl:02X}")
-            print(f"  - Cylinder={cylinder}, Head={head}")
+        self.log(f"[INT 0x13] Seek to track for drive 0x{dl:02X}")
+        self.log(f"  - Cylinder={cylinder}, Head={head}")
 
         if cylinder < emu.cylinders and head < emu.heads:
             return 0x00, False  # Success
@@ -261,15 +242,13 @@ class Int13Handler(BIOSHandler):
 
     def _reset_hard_disk(self, uc: Uc, dl: int) -> int:
         """AH=0x0D: Reset hard disk controller."""
-        if self.emu.verbose:
-            print(f"[INT 0x13] Reset hard disk controller for drive 0x{dl:02X}")
+        self.log(f"[INT 0x13] Reset hard disk controller for drive 0x{dl:02X}")
         return 0x00
 
     def _get_disk_type(self, uc: Uc, dl: int) -> tuple[int, bool]:
         """AH=0x15: Get disk type - WRITES CX/DX for fixed disks."""
         emu = self.emu
-        if emu.verbose:
-            print(f"[INT 0x13] Get disk type for drive 0x{dl:02X}")
+        self.log(f"[INT 0x13] Get disk type for drive 0x{dl:02X}")
 
         if dl < 0x80:
             return 0x00, True  # No disk or unsupported
@@ -282,9 +261,7 @@ class Int13Handler(BIOSHandler):
 
     def _check_extensions(self, uc: Uc, bx: int, dl: int) -> tuple[int, bool]:
         """AH=0x41: Check INT 13 extensions present - WRITES BX/CX."""
-        emu = self.emu
-        if emu.verbose:
-            print(f"[INT 0x13] Check extensions present for drive 0x{dl:02X}")
+        self.log(f"[INT 0x13] Check extensions present for drive 0x{dl:02X}")
 
         if bx == 0x55AA:
             uc.reg_write(UC_X86_REG_BX, 0xAA55)  # Reversed signature
@@ -296,8 +273,7 @@ class Int13Handler(BIOSHandler):
     def _extended_read(self, uc: Uc, ds: int, si: int, dl: int) -> tuple[int, bool]:
         """AH=0x42: Extended read - LBA."""
         emu = self.emu
-        if emu.verbose:
-            print(f"[INT 0x13] Extended read for drive 0x{dl:02X}")
+        self.log(f"[INT 0x13] Extended read for drive 0x{dl:02X}")
 
         packet_addr = (ds << 4) + si
         packet = uc.mem_read(packet_addr, 16)
@@ -307,25 +283,22 @@ class Int13Handler(BIOSHandler):
         segment = struct.unpack('<H', packet[6:8])[0]
         lba = struct.unpack('<Q', packet[8:16])[0]
 
-        if emu.verbose:
-            print(f"  - LBA: {lba}, Sectors: {sectors}, Buffer: 0x{segment:04X}:0x{offset:04X}")
+        self.log(f"  - LBA: {lba}, Sectors: {sectors}, Buffer: 0x{segment:04X}:0x{offset:04X}")
 
         disk_offset = lba * 512
         buffer_addr = (segment << 4) + offset
         bytes_to_read = sectors * 512
 
         if disk_offset + bytes_to_read > emu.disk_size:
-            if emu.verbose:
-                print("  ⚠ Read beyond disk image!")
+            self.log("  ⚠ Read beyond disk image!")
             return 0x01, True  # Invalid command
 
         for i in range(sectors):
             sector_data = emu.sector_read(lba + i)
-            if emu.verbose:
-                print(
-                    f"  ✓ Read sector {i+1}/{sectors} from LBA {lba + i} to 0x{buffer_addr + i*512:05X}"
-                )
-                print(f"    - Data (32 bytes): {sector_data[:32].hex(' ')}")
+            self.log(
+                f"  ✓ Read sector {i+1}/{sectors} from LBA {lba + i} to 0x{buffer_addr + i*512:05X}"
+            )
+            self.log(f"    - Data (32 bytes): {sector_data[:32].hex(' ')}")
             emu.mem_write(buffer_addr + i * 512, sector_data)
 
         return 0x00, False  # Success
@@ -333,15 +306,13 @@ class Int13Handler(BIOSHandler):
     def _get_extended_parameters(self, uc: Uc, ds: int, si: int, dl: int) -> int:
         """AH=0x48: Get extended drive parameters."""
         emu = self.emu
-        if emu.verbose:
-            print(f"[INT 0x13] Get extended drive parameters for drive 0x{dl:02X}")
+        self.log(f"[INT 0x13] Get extended drive parameters for drive 0x{dl:02X}")
 
         buffer_addr = (ds << 4) + si
         buffer_header = uc.mem_read(buffer_addr, 2)
         buffer_size = struct.unpack('<H', buffer_header)[0]
 
-        if emu.verbose:
-            print(f"  - Buffer size requested: {buffer_size} bytes")
+        self.log(f"  - Buffer size requested: {buffer_size} bytes")
 
         total_sectors = emu.disk_size // 512
 
@@ -357,8 +328,7 @@ class Int13Handler(BIOSHandler):
         bytes_to_write = min(buffer_size, 26)
         uc.mem_write(buffer_addr, bytes(params[:bytes_to_write]))
 
-        if emu.verbose:
-            print(f"  - Returned {bytes_to_write} bytes")
-            print(f"  - Total sectors: {total_sectors}")
+        self.log(f"  - Returned {bytes_to_write} bytes")
+        self.log(f"  - Total sectors: {total_sectors}")
 
         return 0x00  # Success
