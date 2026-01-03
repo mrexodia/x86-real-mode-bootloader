@@ -59,13 +59,13 @@ def main():
         sys.exit(1)
 
     # Parse geometry if provided
-    geometry = None
+    geometry: tuple[int, int, int] | None = None
     if args.geometry:
         try:
             parts = args.geometry.split(",")
             if len(parts) != 3:
                 raise ValueError("Geometry must be in format C,H,S")
-            geometry = tuple(int(p.strip()) for p in parts)
+            geometry = tuple(int(p.strip()) for p in parts)  # type: ignore
         except ValueError as e:
             print(f"Error: Invalid geometry format: {e}")
             sys.exit(1)

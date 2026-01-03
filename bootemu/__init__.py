@@ -5,7 +5,17 @@ from ctypes import c_uint8, c_uint16, c_uint32
 import re
 from pathlib import Path
 from collections import OrderedDict
-from typing import Optional, Tuple, Annotated, get_args, get_origin, Protocol, Any, List
+from typing import (
+    Literal,
+    Optional,
+    Tuple,
+    Annotated,
+    get_args,
+    get_origin,
+    Protocol,
+    Any,
+    List,
+)
 
 from .logger import EmulatorLogger
 
@@ -483,11 +493,12 @@ class BootloaderEmulator:
 
     def __init__(
         self,
-        disk_image_path,
-        max_instructions=1000000,
-        geometry=None,
-        floppy_type=None,
-        drive_number=0x80,
+        *,
+        disk_image_path: str,
+        max_instructions: int,
+        geometry: None | Tuple[int, int, int],
+        floppy_type: Literal["360K", "720K", "1.2M", "1.44M", "2.88M"] | None,
+        drive_number: int,
     ):
         """
         Initialize the emulator
