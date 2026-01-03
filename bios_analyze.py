@@ -42,7 +42,9 @@ from emulator import BIOSDataArea, IVT_NAMES
 ivt = bytes.fromhex(IVT.strip())
 bda = BIOSDataArea.from_buffer_copy(bytes.fromhex(BDA.strip()))
 
-assert ctypes.sizeof(bda) == 256, f"Expected BIOS Data Area size 256, got {ctypes.sizeof(bda)}"
+assert ctypes.sizeof(bda) == 256, (
+    f"Expected BIOS Data Area size 256, got {ctypes.sizeof(bda)}"
+)
 
 print("BIOS Data Area:")
 for field in bda._fields_:
@@ -66,5 +68,5 @@ print("\nInterrupt Vector Table:")
 for i in range(256):
     offset = i * 4
     name = IVT_NAMES.get(i, "<unknown>")
-    entry = int.from_bytes(ivt[offset:offset+4], 'little')
+    entry = int.from_bytes(ivt[offset : offset + 4], "little")
     print(f"[{i:02x}]: 0x{entry:08X} -> {name}")

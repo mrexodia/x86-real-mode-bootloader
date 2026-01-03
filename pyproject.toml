@@ -8,3 +8,9 @@ dependencies = [
     "capstone>=5.0.6",
     "unicorn>=2.1.4",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.10",
+    "ty>=0.0.8",
+]
