@@ -12,7 +12,6 @@ import sys
 import struct
 import ctypes
 from pathlib import Path
-from collections import OrderedDict
 
 from unicorn import Uc, UcError  # type: ignore
 from unicorn import *  # type: ignore
@@ -29,6 +28,7 @@ from ..hardware.memory import BIOSDataArea
 from ..hardware.geometry import DiskParameterTable, FixedDiskParameterTable
 from ..hardware.ivt import IVT_NAMES
 from ..hardware.bda import BDAPolicy
+from ..hardware.disk import DiskImage
 
 
 class BootloaderEmulator:
@@ -104,121 +104,45 @@ class BootloaderEmulator:
         print(f"  - Mapped {self.memory_size // 1024} KB at 0x{self.memory_base:08X}")
 
     def detect_geometry(self):
-        """Detect disk geometry following QEMU's algorithm."""
-        # Standard floppy geometries (size_bytes: (cylinders, heads, sectors, name))
-        FLOPPY_TYPES = {
-            '360K': (40, 2, 9, 360 * 1024),
-            '720K': (80, 2, 9, 720 * 1024),
-            '1.2M': (80, 2, 15, 1200 * 1024),
-            '1.44M': (80, 2, 18, 1440 * 1024),
-            '2.88M': (80, 2, 36, 2880 * 1024),
-        }
+        """Populate geometry fields from the loaded :class:`~DiskImage` instance."""
+        if not hasattr(self, "disk") or self.disk is None:
+            raise RuntimeError("Disk image not loaded")
 
-        total_sectors = self.disk_size // 512
-
-        # Method 1: Manual geometry override
-        if self.manual_geometry:
-            self.cylinders, self.heads, self.sectors_per_track = self.manual_geometry
-            self.geometry_method = "Manual override"
-            return
-
-        # Method 2: Floppy type override
-        if self.floppy_type:
-            c, h, s, _ = FLOPPY_TYPES[self.floppy_type]
-            self.cylinders = c
-            self.heads = h
-            self.sectors_per_track = s
-            self.geometry_method = f"Floppy type {self.floppy_type}"
-            return
-
-        # Method 3: Floppy auto-detect (if drive is floppy and size matches)
-        if self.drive_number < 0x80:
-            for floppy_name, (c, h, s, size) in FLOPPY_TYPES.items():
-                if self.disk_size == size:
-                    self.cylinders = c
-                    self.heads = h
-                    self.sectors_per_track = s
-                    self.geometry_method = f"Auto-detected floppy {floppy_name}"
-                    return
-
-        # Method 4: MBR partition table
-        if self.disk_size >= 512:
-            mbr = self.sector_read(0)
-
-            # Check for valid MBR signature (0x55AA at offset 510-511)
-            if mbr[510] == 0x55 and mbr[511] == 0xAA:
-                # Examine partition entries (4 entries starting at offset 0x1BE)
-                for i in range(4):
-                    offset = 0x1BE + (i * 16)
-                    entry = mbr[offset:offset + 16]
-
-                    # Check if partition entry has valid data (non-zero partition type)
-                    part_type = entry[4]
-                    if part_type != 0:
-                        # Extract ending CHS values
-                        end_head = entry[5]
-                        end_sector = entry[6] & 0x3F  # Lower 6 bits
-
-                        # NOTE: keep legacy cylinder decoding exactly.
-                        end_cyl_high = (entry[6] & 0xC0) << 2
-                        end_cyl_low = entry[7]
-
-                        heads = end_head + 1
-                        sectors = end_sector
-
-                        if sectors > 0 and heads > 0:
-                            cylinders = total_sectors // (heads * sectors)
-                            if 1 <= cylinders <= 16383:
-                                self.cylinders = cylinders
-                                self.heads = heads
-                                self.sectors_per_track = sectors
-                                self.geometry_method = "MBR partition table"
-                                return
-
-        # Method 5: Fallback geometry
-        self.heads = 16
-        self.sectors_per_track = 63
-        self.cylinders = total_sectors // (self.heads * self.sectors_per_track)
-        if total_sectors % (self.heads * self.sectors_per_track) != 0:
-            self.cylinders += 1
-        self.geometry_method = "Fallback (QEMU default: 16H/63S)"
+        self.cylinders = self.disk.cylinders
+        self.heads = self.disk.heads
+        self.sectors_per_track = self.disk.sectors_per_track
+        self.geometry_method = self.disk.geometry_method
 
     def sector_read(self, lba: int) -> bytes:
-        """Read sectors from disk image using LBA addressing."""
-        if lba * 512 >= self.disk_size:
-            raise ValueError(f"Disk read out of bounds: LBA={lba}, disk_size={self.disk_size}")
-        if lba in self.disk_cache:
-            return self.disk_cache[lba]
-        self.disk_fd.seek(lba * 512)
-        sector_data = self.disk_fd.read(512)
-        self.disk_cache[lba] = sector_data
-        return sector_data
+        """Read a sector from the loaded disk image (LBA)."""
+        return self.disk.sector_read(lba)
 
     def sector_write(self, lba: int, data: bytes):
-        """Write sectors to disk image using LBA addressing (COW)."""
-        if lba * 512 >= self.disk_size:
-            raise ValueError(f"Disk write out of bounds: LBA={lba}, disk_size={self.disk_size}")
-        if len(data) != 512:
-            raise ValueError(f"Sector write data must be exactly 512 bytes, got {len(data)} bytes")
-        self.disk_cache[lba] = data
+        """Write a sector to the disk cache (COW)."""
+        return self.disk.sector_write(lba, data)
 
     def load_disk_image(self):
-        """Load disk image."""
+        """Load the disk image and detect geometry."""
         print(f"[*] Loading disk image from {self.disk_image_path}...")
 
-        if not self.disk_image_path.exists():
+        try:
+            self.disk = DiskImage(
+                self.disk_image_path,
+                drive_number=self.drive_number,
+                manual_geometry=self.manual_geometry,
+                floppy_type=self.floppy_type,
+            )
+            self.disk.open()
+        except FileNotFoundError:
             print(f"Error: Disk image not found: {self.disk_image_path}")
             sys.exit(1)
+        except Exception as e:
+            print(f"Error: Failed to load disk image: {e}")
+            sys.exit(1)
 
-        # Open disk image file
-        self.disk_fd = open(self.disk_image_path, 'rb')
-        self.disk_fd.seek(0, 2)
-        self.disk_size = self.disk_fd.tell()
-        self.disk_cache: OrderedDict[int, bytes] = OrderedDict()
-
+        self.disk_size = self.disk.size
         print(f"  - Disk image size: {self.disk_size} bytes ({self.disk_size // 1024} KB)")
 
-        # Detect disk geometry
         self.detect_geometry()
         print("[*] Disk geometry:")
         print(f"  - Cylinders: {self.cylinders}")
@@ -226,10 +150,6 @@ class BootloaderEmulator:
         print(f"  - Sectors/Track: {self.sectors_per_track}")
         print(f"  - Total Sectors: {self.disk_size // 512}")
         print(f"  - Method: {self.geometry_method}")
-
-        if self.disk_size < 512:
-            print("Error: Disk image too small (must be at least 512 bytes)")
-            sys.exit(1)
 
     def mem_write(self, address: int, data: bytes | bytearray):
         self.uc.mem_write(address, bytes(data))
