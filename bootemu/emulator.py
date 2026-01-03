@@ -50,6 +50,10 @@ from capstone.x86 import (
     X86_OP_IMM,
     X86_OP_MEM,
     X86_OP_REG,
+    X86_REG_BP,
+    X86_REG_SP,
+    X86_REG_EBP,
+    X86_REG_ESP,
     X86_INS_NOP,
     X86_INS_CALL,
     X86_INS_INT,
@@ -385,7 +389,7 @@ class BootloaderEmulator:
         self.bda.video_page_offset = 0  # Start at page 0
         self.bda.video_port = 0x3D4  # Color card controller port
         self.bda.active_page = 0  # Page 0
-        self.bda.video_rows = 25  # 25 rows (actually 24, 0-indexed)
+        self.bda.video_rows = 24  # Stored as rows-1 (24 means 25 rows)
         self.bda.char_height = 8  # 8-pixel character height
 
         # Cursor configuration
@@ -596,12 +600,14 @@ class BootloaderEmulator:
             if op.type == X86_OP_MEM:
                 mem = op.value.mem
 
-                # Get segment (default to DS if not specified)
-                segment = 0
+                # Get segment, applying real-mode default segment rules
                 if mem.segment != 0:
                     segment = getattr(self.regs, self.reg_name(mem.segment))
+                elif mem.base in (X86_REG_BP, X86_REG_SP, X86_REG_EBP, X86_REG_ESP):
+                    # BP/SP-based addressing defaults to SS
+                    segment = self.regs.ss
                 else:
-                    # Default segment is DS for most operations
+                    # All other addressing defaults to DS
                     segment = self.regs.ds
 
                 # Get base register
@@ -856,11 +862,12 @@ class BootloaderEmulator:
 
             # Push FLAGS, CS, IP (return address points AFTER INT instruction)
             # IP is already pointing after the INT, so just push it as-is
-            sp -= 2
+            # Use 16-bit wraparound for SP to match real hardware behavior
+            sp = (sp - 2) & 0xFFFF
             self.mem_write(ss * 16 + sp, flags.to_bytes(2, "little"))
-            sp -= 2
+            sp = (sp - 2) & 0xFFFF
             self.mem_write(ss * 16 + sp, cs.to_bytes(2, "little"))
-            sp -= 2
+            sp = (sp - 2) & 0xFFFF
             self.mem_write(ss * 16 + sp, ip.to_bytes(2, "little"))
 
             self.regs.sp = sp
@@ -899,8 +906,7 @@ class BootloaderEmulator:
             access_type = "IVT WRITE"
 
         # Format the trace line
-        line = f"[{access_type}] 0x{address:04x} | size={size} | int={int_num:02x} | value=0x{value:04x} | ip=0x{ip:04x} | intseq={self.intterrupt_seq}"
-        self.intterrupt_seq += 1
+        line = f"[{access_type}] 0x{address:04x} | size={size} | int={int_num:02x} | value=0x{value:04x} | ip=0x{ip:04x}"
         if int_num in IVT_NAMES:
             line += f" | name = {IVT_NAMES[int_num]}"
 
@@ -954,8 +960,6 @@ class BootloaderEmulator:
             line = f"[{access_type}] 0x{address:04x} | size={size} | field={field_name} | desc={field_desc} | field_size={field_size} | value=0x{value:04x} | ip=0x{ip:04x} | policy={policy_name}"
         else:
             line = f"[{access_type}] 0x{address:04x} | size={size} | value=0x{value:04x} | ip=0x{ip:04x} | policy=PASSIVE"
-        line += f" | intseq={self.intterrupt_seq}"
-        self.intterrupt_seq += 1
         self.log.interrupt(line)
 
         # Handle writes based on policy
