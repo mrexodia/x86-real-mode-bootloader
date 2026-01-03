@@ -3,7 +3,7 @@ Interrupt Vector Table (IVT) management for the x86 Real Mode Bootloader Emulato
 """
 
 import struct
-from typing import Dict, Optional, Tuple
+from typing import Tuple
 
 from ..memory.memory_layout import INTERRUPT_VECTOR_TABLE_ADDR
 
@@ -122,44 +122,31 @@ class IVTManager:
             raise ValueError(f"Invalid interrupt number: {interrupt}")
     
     def create_bios_stubs(self) -> None:
-        """Create BIOS stub routines in ROM memory."""
+        """Create minimal BIOS stub routines in ROM memory.
+
+        These stubs are meant as safe placeholders (they *return* from the
+        interrupt without doing any work) and must not recurse via INT.
+        """
         rom_base = 0xF0000
-        
-        # Create BIOS stub for INT 10h (Video Services)
-        int10_stub = b'\xCD\x10\xC3'  # INT 10h, RET
-        int10_addr = rom_base + 0xF060  # Typical INT 10h address
-        self.mu.mem_write(int10_addr, int10_stub)
-        self.create_ivt_entry(0x10, 0xF000, 0xF060)
-        
-        # Create BIOS stub for INT 13h (Disk Services)  
-        int13_stub = b'\xCD\x13\xC3'  # INT 13h, RET
-        int13_addr = rom_base + 0xF0A0  # Typical INT 13h address
-        self.mu.mem_write(int13_addr, int13_stub)
-        self.create_ivt_entry(0x13, 0xF000, 0xF0A0)
-        
-        # Create BIOS stub for INT 15h (System Services)
-        int15_stub = b'\xCD\x15\xC3'  # INT 15h, RET
-        int15_addr = rom_base + 0xF859  # Typical INT 15h address
-        self.mu.mem_write(int15_addr, int15_stub)
-        self.create_ivt_entry(0x15, 0xF000, 0xF859)
-        
-        # Create BIOS stub for INT 16h (Keyboard Services)
-        int16_stub = b'\xCD\x16\xC3'  # INT 16h, RET
-        int16_addr = rom_base + 0xF84E  # Typical INT 16h address
-        self.mu.mem_write(int16_addr, int16_stub)
-        self.create_ivt_entry(0x16, 0xF000, 0xF84E)
-        
-        # Create BIOS stub for INT 17h (Printer Services)
-        int17_stub = b'\xCD\x17\xC3'  # INT 17h, RET
-        int17_addr = rom_base + 0xF82D  # Typical INT 17h address
-        self.mu.mem_write(int17_stub, int17_stub)
-        self.create_ivt_entry(0x17, 0xF000, 0xF82D)
-        
-        # Create BIOS stub for INT 1Ah (RTC Services)
-        int1a_stub = b'\xCD\x1A\xC3'  # INT 1Ah, RET
-        int1a_addr = rom_base + 0xFE6E  # Typical INT 1Ah address
-        self.mu.mem_write(int1a_addr, int1a_stub)
-        self.create_ivt_entry(0x1A, 0xF000, 0xFE6E)
+
+        # Minimal handler: IRET
+        stub = b'\xCF'
+
+        # The addresses below are "typical" BIOS locations in the F000: segment.
+        # We only provide placeholders; real behavior is implemented via Unicorn
+        # interrupt hooks in the main emulator.
+        stubs = {
+            0x10: 0xF060,  # Video Services
+            0x13: 0xF0A0,  # Disk Services
+            0x15: 0xF859,  # System Services
+            0x16: 0xF84E,  # Keyboard Services
+            0x17: 0xF82D,  # Printer Services
+            0x1A: 0xFE6E,  # RTC Services
+        }
+
+        for intno, offset in stubs.items():
+            self.mu.mem_write(rom_base + offset, stub)
+            self.create_ivt_entry(intno, 0xF000, offset)
     
     def get_interrupt_name(self, interrupt: int) -> str:
         """Get the descriptive name for an interrupt."""

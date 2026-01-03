@@ -8,47 +8,20 @@ logging every instruction execution with relevant registers and memory accesses.
 
 import sys
 import struct
-import argparse
 import ctypes
 from pathlib import Path
 from collections import OrderedDict
-from typing import Optional, Tuple, List
 
-from unicorn import * # type: ignore
-from unicorn.x86_const import * # type: ignore
+from unicorn import *  # type: ignore
+from unicorn.x86_const import *  # type: ignore
 
-from capstone import * # type: ignore
-from capstone.x86_const import * # type: ignore
+from capstone import *  # type: ignore
+from capstone.x86_const import *  # type: ignore
 
-# Import utilities, hardware, and tracing modules
-from ..types.c_types import c_array, c_struct
-from ..hardware.memory import (
-    BIOSDataArea,
-    BIOS_DATA_AREA_ADDR,
-    INTERRUPT_VECTOR_TABLE_ADDR,
-    BOOT_ADDRESS,
-    BIOS_ROM_BASE,
-    BIOS_ROM_END,
-    MEMORY_SIZE_1MB,
-    SECTOR_SIZE
-)
-from ..hardware.geometry import (
-    detect_disk_geometry,
-    DiskParameterTable,
-    FixedDiskParameterTable
-)
-from ..hardware.ivt import IVTManager, IVT_NAMES
-from ..hardware.bda import FieldMarker, BDAPolicy, BDAPolicyMarker
-from ..tracing import EmulatorTracer
-
-
-
-
-
-
-
-
-
+from ..hardware.memory import BIOSDataArea
+from ..hardware.geometry import DiskParameterTable, FixedDiskParameterTable
+from ..hardware.ivt import IVT_NAMES
+from ..hardware.bda import BDAPolicy
 
 
 class BootloaderEmulator:

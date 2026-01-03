@@ -11,7 +11,7 @@ boot
 trace.json
 trace*.txt
 
- Python-generated files
+# Python-generated files
 __pycache__/
 *.py[oc]
 build/
