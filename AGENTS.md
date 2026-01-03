@@ -12,19 +12,19 @@ The `emulator.py` script emulates x86 real mode execution using the Unicorn Engi
 
 ```bash
 # Run with default 1 million instructions
-uv run ./emulator.py <disk_image>
+./emulator.py <disk_image>
 
 # Run with custom instruction limit
-uv run ./emulator.py <disk_image> -m 1000000
+./emulator.py <disk_image> -m 1000000
 
 # Run a floppy image (sets drive number to 0x00)
-uv run ./emulator.py dos7.img -f 1.44M -m 1000000
+./emulator.py dos7.img -f 1.44M -m 1000000
 
 # Specify custom CHS geometry
-uv run ./emulator.py hdd.img -g 120,16,63
+./emulator.py hdd.img -g 120,16,63
 
 # Override drive number
-uv run ./emulator.py disk.img -d 0x00
+./emulator.py disk.img -d 0x00
 ```
 
 ### Command Line Options
