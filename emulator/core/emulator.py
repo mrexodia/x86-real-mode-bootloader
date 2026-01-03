@@ -10,7 +10,6 @@ legacy tracing implementation are split into dedicated modules.
 
 import sys
 import struct
-import ctypes
 from pathlib import Path
 
 from unicorn import Uc, UcError  # type: ignore
@@ -25,10 +24,10 @@ from ..bios import BIOSServices
 from ..tracing import LegacyInstructionTracer
 
 from ..hardware.memory import BIOSDataArea
-from ..hardware.geometry import DiskParameterTable, FixedDiskParameterTable
 from ..hardware.ivt import IVT_NAMES
 from ..hardware.bda import BDAPolicy
 from ..hardware.disk import DiskImage
+from ..hardware import bios_tables
 
 
 class BootloaderEmulator:
@@ -157,22 +156,11 @@ class BootloaderEmulator:
 
     def write_bda_to_memory(self):
         """Write BDA structure to Unicorn memory at 0x400."""
-        if not self.bda:
-            return
-
-        bda_bytes = bytes(self.bda)
-        assert len(bda_bytes) == 256, f"Invalid BDA size: {len(bda_bytes)}"
-        self.mem_write(0x400, bda_bytes)
-        print(f"[*] Initialized BIOS Data Area (BDA) at 0x00400 ({len(bda_bytes)} bytes)")
-        print(f"    Equipment: 0x{self.bda.equipment_list:04X}")
-        print(f"    Memory: {self.bda.memory_size_kb} KB")
-        print(f"    Video: Mode {self.bda.video_mode}, {self.bda.video_columns}x{self.bda.video_rows+1}")
+        return bios_tables.write_bda_to_memory(self)
 
     def _write_ivt_entry(self, interrupt_number: int, segment: int, offset: int):
         """Write a far pointer to an IVT entry."""
-        ivt_address = interrupt_number * 4
-        data = struct.pack('<HH', offset, segment)
-        self.mem_write(ivt_address, data)
+        return bios_tables.write_ivt_entry(self, interrupt_number, segment, offset)
 
     def load_bootloader(self):
         """Load the bootloader from the first 512 bytes of disk image at 0x7C00."""
@@ -193,139 +181,15 @@ class BootloaderEmulator:
 
     def create_bda(self):
         """Create and initialize BIOS Data Area."""
-        self.bda = BIOSDataArea()
-
-        # Zero everything first
-        ctypes.memset(ctypes.addressof(self.bda), 0, ctypes.sizeof(self.bda))
-
-        # Essential memory configuration
-        self.bda.memory_size_kb = 640
-
-        # Equipment word - minimal configuration
-        # Bit 4-5: Video mode (10 = 80x25 color text)
-        equipment = 0x0020  # Minimal: video only
-        if self.drive_number < 0x80:
-            equipment |= 0x0001  # Bit 0: Floppy drive installed
-
-        self.bda.equipment_list = equipment
-
-        # Video configuration (80x25 color text mode)
-        self.bda.video_mode = 0x03
-        self.bda.video_columns = 80
-        self.bda.video_page_size = 4096
-        self.bda.video_page_offset = 0
-        self.bda.video_port = 0x3D4
-        self.bda.active_page = 0
-        self.bda.video_rows = 25
-        self.bda.char_height = 8
-
-        # Cursor configuration
-        self.bda.cursor_pos[0] = 0x0000
-        self.bda.cursor_start_line = 6
-        self.bda.cursor_end_line = 7
-
-        # Keyboard buffer (empty)
-        self.bda.kbd_buffer_head = 0x1E
-        self.bda.kbd_buffer_tail = 0x1E
-        self.bda.kbd_buffer_start = 0x1E
-        self.bda.kbd_buffer_end = 0x3E
-
-        # Hard disk configuration
-        self.bda.num_hard_disks = 1 if self.drive_number >= 0x80 else 0
-
-        # Timer: Start at 0
-        self.bda.timer_counter = 0
-
-        # Reset flag: Cold boot
-        self.bda.reset_flag = 0x0000
-
-        return self.bda
+        return bios_tables.create_bda(self)
 
     def create_int_stubs(self):
         """Create INT N; IRET stubs in BIOS ROM area for all 256 interrupts."""
-        STUB_BASE = 0xF0000
-
-        for int_num in range(256):
-            stub_addr = STUB_BASE + (int_num * 4)
-            stub_code = bytes([0xCD, int_num, 0xCF])
-            self.mem_write(stub_addr, stub_code)
+        return bios_tables.create_int_stubs(self)
 
     def setup_bios_tables(self):
         """Initialize BIOS parameter tables and IVT entries."""
-        print("[*] Setting up BIOS parameter tables...")
-
-        self.create_bda()
-        self.write_bda_to_memory()
-
-        self.create_int_stubs()
-
-        # Populate ALL 256 IVT entries to point to BIOS stubs
-        for int_num in range(256):
-            stub_offset = int_num * 4
-            self._write_ivt_entry(int_num, 0xF000, stub_offset)
-
-        # Now overwrite specific IVT entries with data structure pointers
-
-        # Create Diskette Parameter Table (DPT)
-        dpt = DiskParameterTable()
-        dpt.step_rate_head_unload = 0xDF
-        dpt.head_load_dma = 0x02
-        dpt.motor_off_delay = 0x25
-        dpt.bytes_per_sector = 0x02
-        dpt.sectors_per_track = 0x12
-        dpt.gap_length = 0x1B
-        dpt.data_length = 0xFF
-        dpt.format_gap = 0x6C
-        dpt.format_fill = 0xF6
-        dpt.head_settle = 0x0F
-        dpt.motor_start = 0x08
-
-        # Determine DPT parameters
-        if self.floppy_type or self.drive_number < 0x80:
-            dpt_location = "detected floppy"
-        else:
-            dpt_location = "default 1.44MB"
-
-        if dpt_location == "detected floppy" and self.floppy_type is None:
-            dpt.sectors_per_track = self.sectors_per_track
-
-        # Place DPT at 0xF000:0xEFC7
-        DPT_ADDR = 0xFEFC7
-        self.mem_write(DPT_ADDR, bytes(dpt))
-        self._write_ivt_entry(0x1E, 0xF000, 0xEFC7)
-        print(f"  - INT 0x1E (DPT): {dpt_location} at 0x{DPT_ADDR:05X}")
-
-        # Handle hard disk parameter table (INT 0x41) if booting from HDD
-        if self.drive_number >= 0x80:
-            fdpt = FixedDiskParameterTable()
-            fdpt.cylinders = self.cylinders
-            fdpt.heads = self.heads
-            fdpt.reduced_write_current = 0
-            fdpt.write_precomp = 0
-            fdpt.ecc_burst = 0
-            fdpt.control_byte = 0xC0
-            fdpt.timeout_1 = 0
-            fdpt.timeout_2 = 0
-            fdpt.timeout_3 = 0
-            fdpt.landing_zone = self.cylinders
-            fdpt.sectors_per_track = self.sectors_per_track
-            fdpt.reserved = 0
-
-            FDPT_ADDR = 0xFE401
-            self.mem_write(FDPT_ADDR, bytes(fdpt))
-            self._write_ivt_entry(0x41, 0xF000, 0xE401)
-            print(f"  - INT 0x41 (FDPT): Drive 0x{self.drive_number:02X} at 0x{FDPT_ADDR:05X}")
-            print(f"    Geometry: {self.cylinders}C x {self.heads}H x {self.sectors_per_track}S")
-
-            self._write_ivt_entry(0x42, 0x0000, 0x0000)
-        else:
-            self._write_ivt_entry(0x41, 0x0000, 0x0000)
-            self._write_ivt_entry(0x42, 0x0000, 0x0000)
-
-        # Video tables (INT 0x1D, 0x1F, 0x43) - leave as NULL
-        self._write_ivt_entry(0x1D, 0x0000, 0x0000)
-        self._write_ivt_entry(0x1F, 0x0000, 0x0000)
-        self._write_ivt_entry(0x43, 0x0000, 0x0000)
+        return bios_tables.setup_bios_tables(self)
 
     def setup_cpu_state(self):
         """Initialize CPU registers for boot."""
