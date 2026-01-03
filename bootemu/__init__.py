@@ -7,6 +7,8 @@ from pathlib import Path
 from collections import OrderedDict
 from typing import Optional, Tuple, Annotated, get_args, get_origin, Protocol, Any, List
 
+from .logger import EmulatorLogger
+
 from unicorn import (
     Uc,  # pyright: ignore[reportPrivateImportUsage]
     UcError,  # pyright: ignore[reportPrivateImportUsage]
@@ -483,8 +485,6 @@ class BootloaderEmulator:
         self,
         disk_image_path,
         max_instructions=1000000,
-        trace_file="trace.txt",
-        verbose=True,
         geometry=None,
         floppy_type=None,
         drive_number=0x80,
@@ -495,19 +495,18 @@ class BootloaderEmulator:
         Args:
             disk_image_path: Path to disk image file (bootloader loaded from first 512 bytes)
             max_instructions: Maximum number of instructions to execute
-            trace_file: Output file for instruction trace
-            verbose: Enable verbose console output
             geometry: Manual CHS geometry as (cylinders, heads, sectors_per_track) tuple
             floppy_type: Standard floppy type ('360K', '720K', '1.2M', '1.44M', '2.88M')
             drive_number: BIOS drive number (0x00-0x7F for floppy, 0x80+ for HDD)
         """
         self.disk_image_path = Path(disk_image_path)
         self.max_instructions = max_instructions
-        self.trace_file = trace_file
-        self.verbose = verbose
         self.drive_number = drive_number
         self.manual_geometry = geometry
         self.floppy_type = floppy_type
+
+        # Initialize logger
+        self.log = EmulatorLogger(str(disk_image_path))
 
         # CHS geometry (will be detected later)
         self.cylinders = 0
@@ -523,7 +522,7 @@ class BootloaderEmulator:
         self.memory_size = 0x100000  # 1 MB
 
         # Initialize Unicorn for x86 16-bit real mode
-        print("[*] Initializing Unicorn Engine (x86 16-bit real mode)...")
+        self.log.console("[*] Initializing Unicorn Engine (x86 16-bit real mode)...")
         self.uc = Uc(UC_ARCH_X86, UC_MODE_16)
 
         # Initialize Capstone for disassembly
@@ -533,9 +532,10 @@ class BootloaderEmulator:
         # Execution tracking
         self.instruction_count = 0
         self.uninitialized_count = 0
-        self.trace_output = None
+        self.intterrupt_seq = 0
         self.last_exception = None
         self.screen_output = ""
+        self.serial_output = ""
 
         # Disk emulation
 
@@ -546,7 +546,7 @@ class BootloaderEmulator:
 
     def setup_memory(self):
         """Set up memory regions for the emulator"""
-        print("[*] Setting up memory...")
+        self.log.console("[*] Setting up memory...")
 
         # Map main memory (1 MB for real mode)
         self.uc.mem_map(self.memory_base, self.memory_size, UC_PROT_ALL)
@@ -554,7 +554,9 @@ class BootloaderEmulator:
         # Zero out memory
         self.mem_write(self.memory_base, b"\x00" * self.memory_size)
 
-        print(f"  - Mapped {self.memory_size // 1024} KB at 0x{self.memory_base:08X}")
+        self.log.console(
+            f"  - Mapped {self.memory_size // 1024} KB at 0x{self.memory_base:08x}"
+        )
 
     def detect_geometry(self):
         """
@@ -634,7 +636,10 @@ class BootloaderEmulator:
                             # Calculate cylinders from total sectors for accuracy
                             cylinders = total_sectors // (heads * sectors)
                             # Use partition table cylinder as upper bound validation
-                            if 1 <= cylinders <= 16383 and cylinders >= cylinders_from_partition:
+                            if (
+                                1 <= cylinders <= 16383
+                                and cylinders >= cylinders_from_partition
+                            ):
                                 self.cylinders = cylinders
                                 self.heads = heads
                                 self.sectors_per_track = sectors
@@ -677,10 +682,10 @@ class BootloaderEmulator:
 
     def load_disk_image(self):
         """Load disk image"""
-        print(f"[*] Loading disk image from {self.disk_image_path}...")
+        self.log.console(f"[*] Loading disk image from {self.disk_image_path}...")
 
         if not self.disk_image_path.exists():
-            print(f"Error: Disk image not found: {self.disk_image_path}")
+            self.log.console(f"Error: Disk image not found: {self.disk_image_path}")
             sys.exit(1)
 
         # Open disk image file
@@ -689,21 +694,21 @@ class BootloaderEmulator:
         self.disk_size = self.disk_fd.tell()
         self.disk_cache: OrderedDict[int, bytes] = OrderedDict()
 
-        print(
+        self.log.console(
             f"  - Disk image size: {self.disk_size} bytes ({self.disk_size // 1024} KB)"
         )
 
         # Detect disk geometry
         self.detect_geometry()
-        print("[*] Disk geometry:")
-        print(f"  - Cylinders: {self.cylinders}")
-        print(f"  - Heads: {self.heads}")
-        print(f"  - Sectors/Track: {self.sectors_per_track}")
-        print(f"  - Total Sectors: {self.disk_size // 512}")
-        print(f"  - Method: {self.geometry_method}")
+        self.log.console("[*] Disk geometry:")
+        self.log.console(f"  - Cylinders: {self.cylinders}")
+        self.log.console(f"  - Heads: {self.heads}")
+        self.log.console(f"  - Sectors/Track: {self.sectors_per_track}")
+        self.log.console(f"  - Total Sectors: {self.disk_size // 512}")
+        self.log.console(f"  - Method: {self.geometry_method}")
 
         if self.disk_size < 512:
-            print("Error: Disk image too small (must be at least 512 bytes)")
+            self.log.console("Error: Disk image too small (must be at least 512 bytes)")
             sys.exit(1)
 
     def mem_write(self, address: int, data: bytes | bytearray):
@@ -718,12 +723,12 @@ class BootloaderEmulator:
         bda_bytes = bytes(self.bda)
         assert len(bda_bytes) == 256, f"Invalid BDA size: {len(bda_bytes)}"
         self.mem_write(0x400, bda_bytes)
-        print(
+        self.log.console(
             f"[*] Initialized BIOS Data Area (BDA) at 0x00400 ({len(bda_bytes)} bytes)"
         )
-        print(f"    Equipment: 0x{self.bda.equipment_list:04X}")
-        print(f"    Memory: {self.bda.memory_size_kb} KB")
-        print(
+        self.log.console(f"    Equipment: 0x{self.bda.equipment_list:04x}")
+        self.log.console(f"    Memory: {self.bda.memory_size_kb} KB")
+        self.log.console(
             f"    Video: Mode {self.bda.video_mode}, {self.bda.video_columns}x{self.bda.video_rows + 1}"
         )
 
@@ -744,25 +749,25 @@ class BootloaderEmulator:
 
     def load_bootloader(self):
         """Load the bootloader from the first 512 bytes of disk image at 0x7C00"""
-        print("[*] Loading bootloader from disk image...")
+        self.log.console("[*] Loading bootloader from disk image...")
 
         # Load boot sector from first 512 bytes of disk image
         bootloader_code = self.sector_read(0)
-        print("  - Loaded boot sector from disk image (512 bytes)")
+        self.log.console("  - Loaded boot sector from disk image (512 bytes)")
 
         # Verify boot signature (0xAA55 at offset 510-511)
         signature = struct.unpack("<H", bootloader_code[510:512])[0]
         if signature == 0xAA55:
-            print(f"  ✓ Valid boot signature: 0x{signature:04X}")
+            self.log.console(f"  ✓ Valid boot signature: 0x{signature:04x}")
         else:
-            print(
-                f"  ⚠ Warning: Invalid boot signature: 0x{signature:04X} (expected 0xAA55)"
+            self.log.console(
+                f"  ⚠ Warning: Invalid boot signature: 0x{signature:04x} (expected 0xAA55)"
             )
             sys.exit(1)
 
         # Load bootloader at 0x7C00
         self.mem_write(self.boot_address, bootloader_code)
-        print(f"  - Loaded at 0x{self.boot_address:04X}")
+        self.log.console(f"  - Loaded at 0x{self.boot_address:04x}")
 
     def create_bda(self):
         """Create and initialize BIOS Data Area"""
@@ -827,7 +832,7 @@ class BootloaderEmulator:
 
     def setup_bios_tables(self):
         """Initialize BIOS parameter tables and IVT entries"""
-        print("[*] Setting up BIOS parameter tables...")
+        self.log.console("[*] Setting up BIOS parameter tables...")
 
         # Initialize BDA if enabled
         self.create_bda()
@@ -873,7 +878,7 @@ class BootloaderEmulator:
         DPT_ADDR = 0xFEFC7
         self.mem_write(DPT_ADDR, bytes(dpt))
         self._write_ivt_entry(0x1E, 0xF000, 0xEFC7)
-        print(f"  - INT 0x1E (DPT): {dpt_location} at 0x{DPT_ADDR:05X}")
+        self.log.console(f"  - INT 0x1E (DPT): {dpt_location} at 0x{DPT_ADDR:05x}")
 
         # Handle hard disk parameter table (INT 0x41) if booting from HDD
         if self.drive_number >= 0x80:
@@ -896,10 +901,10 @@ class BootloaderEmulator:
             FDPT_ADDR = 0xFE401
             self.mem_write(FDPT_ADDR, bytes(fdpt))
             self._write_ivt_entry(0x41, 0xF000, 0xE401)
-            print(
-                f"  - INT 0x41 (FDPT): Drive 0x{self.drive_number:02X} at 0x{FDPT_ADDR:05X}"
+            self.log.console(
+                f"  - INT 0x41 (FDPT): Drive 0x{self.drive_number:02x} at 0x{FDPT_ADDR:05x}"
             )
-            print(
+            self.log.console(
                 f"    Geometry: {self.cylinders}C x {self.heads}H x {self.sectors_per_track}S"
             )
 
@@ -918,7 +923,7 @@ class BootloaderEmulator:
 
     def setup_cpu_state(self):
         """Initialize CPU registers for boot"""
-        print("[*] Setting up CPU state...")
+        self.log.console("[*] Setting up CPU state...")
 
         # Set instruction pointer to boot sector address
         self.uc.reg_write(UC_X86_REG_IP, self.boot_address)
@@ -946,9 +951,9 @@ class BootloaderEmulator:
         ]:
             self.uc.reg_write(reg, 0x0000)
 
-        print(f"  - CS:IP: 0x{0x0000:04X}:0x{self.boot_address:04X}")
-        print(f"  - SS:SP: 0x{0x0000:04X}:0x{self.boot_address:04X}")
-        print(f"  - DL: 0x{self.drive_number:02X} (drive number)")
+        self.log.console(f"  - CS:IP: 0x{0x0000:04x}:0x{self.boot_address:04x}")
+        self.log.console(f"  - SS:SP: 0x{0x0000:04x}:0x{self.boot_address:04x}")
+        self.log.console(f"  - DL: 0x{self.drive_number:02x} (drive number)")
 
     def get_register_value(self, reg_name) -> int:
         """Get register value by name"""
@@ -1070,7 +1075,7 @@ class BootloaderEmulator:
             physical_addr = (cs << 4) + ip
 
             if address != physical_addr:
-                print(
+                self.log.console(
                     f"\n[*] Physical address mismatch: {hex(address)} != {hex(physical_addr)} ({cs:04x}:{ip:04x})"
                 )
                 uc.emu_stop()
@@ -1094,7 +1099,7 @@ class BootloaderEmulator:
                 self.uninitialized_count = 0
 
             if self.uninitialized_count >= 5:
-                print(
+                self.log.console(
                     "\n[*] Detected possible uninitialized memory usage (5 consecutive 0000 instructions)"
                 )
                 uc.emu_stop()
@@ -1113,7 +1118,7 @@ class BootloaderEmulator:
                 for reg in self._get_regs(instr):
                     reg_value = self.get_register_value(reg)
                     if reg_value is not None:
-                        line += f"|{reg}=0x{reg_value:x}"
+                        line += f"|{reg}=0x{reg_value:04x}"
 
                 # Add memory address and value if accessing memory
                 mem_addr, disp = self.compute_memory_address(instr)
@@ -1156,6 +1161,7 @@ class BootloaderEmulator:
 
                 # Special handling for CALL - show return address
                 if instr.id == X86_INS_CALL:
+                    # TODO: do we need to decode cs:ip from ret_address?
                     ret_address = address + instr.size
                     line += f"|return_address=0x{ret_address:x}"
 
@@ -1164,68 +1170,63 @@ class BootloaderEmulator:
                     # Get interrupt number from operand
                     if len(instr.operands) > 0 and instr.operands[0].type == X86_OP_IMM:
                         int_num = instr.operands[0].value.imm
-                        line += f"|int=0x{int_num:x}"
+                        line += f"|int=0x{int_num:02x}"
             else:
                 line += f"??? (code: {code.hex()}, size: 0x{size:x})"
 
-            line += "\n"
-
-            # Write to trace file
-            if self.trace_output:
-                self.trace_output.write(line)
-
-            # Optionally print to console (all instructions in verbose mode)
-            if self.verbose:
-                print(line.rstrip())
+            # Write to instruction log
+            self.log.instruction(line.rstrip())
 
             # Check instruction limit
             if self.instruction_count >= self.max_instructions:
-                print(
+                self.log.console(
                     f"\n[*] Reached maximum instruction limit ({self.max_instructions})"
                 )
                 uc.emu_stop()
 
             if code == b"\xeb\xfe":
-                print("\n[*] Infinite loop detected!")
+                self.log.console("\n[*] Infinite loop detected!")
                 uc.emu_stop()
 
         except (KeyboardInterrupt, SystemExit):
-            print("\n[!] Interrupted by user")
+            self.log.console("\n[!] Interrupted by user")
             uc.emu_stop()
         except Exception as e:
-            print(f"\n[!] Error in hook_code: {e}")
+            self.log.console(f"\n[!] Error in hook_code: {e}")
             import traceback
 
             traceback.print_exc()
             uc.emu_stop()
 
-    def _dump_registers(self, uc: Uc, intno: int, label: str):
+    def _dump_registers(self, label: str):
         """Dump register state for debugging"""
-        ax = uc.reg_read(UC_X86_REG_AX)
-        bx = uc.reg_read(UC_X86_REG_BX)
-        cx = uc.reg_read(UC_X86_REG_CX)
-        dx = uc.reg_read(UC_X86_REG_DX)
-        si = uc.reg_read(UC_X86_REG_SI)
-        di = uc.reg_read(UC_X86_REG_DI)
-        bp = uc.reg_read(UC_X86_REG_BP)
-        sp = uc.reg_read(UC_X86_REG_SP)
-        cs = uc.reg_read(UC_X86_REG_CS)
-        ds = uc.reg_read(UC_X86_REG_DS)
-        es = uc.reg_read(UC_X86_REG_ES)
-        ss = uc.reg_read(UC_X86_REG_SS)
-        flags = uc.reg_read(UC_X86_REG_EFLAGS)
+        ax = self.uc.reg_read(UC_X86_REG_AX)
+        bx = self.uc.reg_read(UC_X86_REG_BX)
+        cx = self.uc.reg_read(UC_X86_REG_CX)
+        dx = self.uc.reg_read(UC_X86_REG_DX)
+        si = self.uc.reg_read(UC_X86_REG_SI)
+        di = self.uc.reg_read(UC_X86_REG_DI)
+        bp = self.uc.reg_read(UC_X86_REG_BP)
+        sp = self.uc.reg_read(UC_X86_REG_SP)
+        cs = self.uc.reg_read(UC_X86_REG_CS)
+        ds = self.uc.reg_read(UC_X86_REG_DS)
+        es = self.uc.reg_read(UC_X86_REG_ES)
+        ss = self.uc.reg_read(UC_X86_REG_SS)
+        flags = self.uc.reg_read(UC_X86_REG_EFLAGS)
         cf = (flags >> 0) & 1
         zf = (flags >> 6) & 1
-        print(
-            f"[DEBUG] INT 0x{intno:02X} {label}: ax={ax:04x} bx={bx:04x} cx={cx:04x} dx={dx:04x} si={si:04x} di={di:04x} bp={bp:04x} sp={sp:04x} cs={cs:04x} ds={ds:04x} ss={ss:04x} es={es:04x} flags={flags:04x} cf={cf} zf={zf}"
+        self.log.instruction(
+            f"[REGS] {label}: ax={ax:04x} bx={bx:04x} cx={cx:04x} dx={dx:04x} si={si:04x} di={di:04x} bp={bp:04x} sp={sp:04x} cs={cs:04x} ds={ds:04x} ss={ss:04x} es={es:04x} flags={flags:04x} cf={cf} zf={zf}"
         )
 
     def handle_bios_interrupt(self, uc: Uc, intno: int):
         """Route interrupt to appropriate BIOS service handler"""
-        print(
-            f"[*] Handling BIOS interrupt 0x{intno:02X} -> {IVT_NAMES.get(intno, 'Unknown')}"
+        self.log.interrupt(
+            f"[intseq={self.intterrupt_seq}] Handling BIOS INT 0x{intno:02x} -> {IVT_NAMES.get(intno, 'Unknown')}"
         )
-        self._dump_registers(uc, intno, "BEFORE")
+        self.intterrupt_seq += 1
+
+        self._dump_registers(f"INT 0x{intno:02x} BEFORE")
         if intno == 0x10:
             # Video Services
             self.handle_int10(uc)
@@ -1256,11 +1257,12 @@ class BootloaderEmulator:
         else:
             # Unhandled BIOS interrupt
             ip = uc.reg_read(UC_X86_REG_IP)
-            if self.verbose:
-                print(f"[INT] Unhandled BIOS interrupt 0x{intno:02X} at 0x{ip:04X}")
+            self.log.interrupt(
+                f"[INT] Unhandled BIOS interrupt 0x{intno:02x} at 0x{ip:04x}"
+            )
             uc.emu_stop()
 
-        self._dump_registers(uc, intno, "AFTER")
+        self._dump_registers(f"INT 0x{intno:02x} AFTER")
 
     def hook_interrupt(self, uc: Uc, intno, user_data):
         """Hook called before INT instruction executes"""
@@ -1318,8 +1320,7 @@ class BootloaderEmulator:
         if ah == 0x00:
             # Set video mode
             al = uc.reg_read(UC_X86_REG_AX) & 0xFF
-            if self.verbose:
-                print(f"[INT 0x10] Set video mode: 0x{al:02X}")
+            self.log.interrupt(f"[INT 0x10] Set video mode: 0x{al:02x}")
 
             # Update BDA video mode field (0x0449)
             if self.bda:
@@ -1342,8 +1343,9 @@ class BootloaderEmulator:
             dh = (uc.reg_read(UC_X86_REG_DX) >> 8) & 0xFF  # Row
             dl = uc.reg_read(UC_X86_REG_DX) & 0xFF  # Column
 
-            if self.verbose:
-                print(f"[INT 0x10] Set cursor position: page={bh}, row={dh}, col={dl}")
+            self.log.interrupt(
+                f"[INT 0x10] Set cursor position: page={bh}, row={dh}, col={dl}"
+            )
 
             # Update cursor position in BDA (0x0450 + page*2)
             if self.bda and bh < 8:  # Only 8 pages
@@ -1356,8 +1358,7 @@ class BootloaderEmulator:
             # Get cursor position and shape
             bh = (uc.reg_read(UC_X86_REG_BX) >> 8) & 0xFF  # Page number
 
-            if self.verbose:
-                print(f"[INT 0x10] Get cursor position: page={bh}")
+            self.log.interrupt(f"[INT 0x10] Get cursor position: page={bh}")
 
             # Read cursor position from BDA
             if self.bda and bh < 8:
@@ -1370,10 +1371,9 @@ class BootloaderEmulator:
                 uc.reg_write(UC_X86_REG_DX, (row << 8) | col)
                 uc.reg_write(UC_X86_REG_CX, cursor_shape)
 
-                if self.verbose:
-                    print(
-                        f"  - Returning: row={row}, col={col}, shape=0x{cursor_shape:04X}"
-                    )
+                self.log.interrupt(
+                    f"  - Returning: row={row}, col={col}, shape=0x{cursor_shape:04x}"
+                )
             else:
                 # Default if BDA not available
                 uc.reg_write(UC_X86_REG_DX, 0x0000)
@@ -1388,14 +1388,12 @@ class BootloaderEmulator:
                 char = "\n"
             else:
                 char = chr(al) if 32 <= al < 127 else f"\\x{al:02x}"
-            if self.verbose:
-                print(f"[INT 0x10] Teletype output: {repr(char)}")
-                self.screen_output += char
+            self.log.interrupt(f"[INT 0x10] Teletype output: {repr(char)}")
+            self.screen_output += char
 
         elif ah == 0x0F:
             # Get current video mode
-            if self.verbose:
-                print("[INT 0x10] Get current video mode")
+            self.log.interrupt("[INT 0x10] Get current video mode")
 
             # Read from BDA
             if self.bda:
@@ -1415,16 +1413,16 @@ class BootloaderEmulator:
                 (uc.reg_read(UC_X86_REG_BX) & 0x00FF) | (active_page << 8),
             )
 
-            if self.verbose:
-                print(
-                    f"  - Returning: mode=0x{video_mode:02X}, columns={video_columns}, page={active_page}"
-                )
+            self.log.interrupt(
+                f"  - Returning: mode=0x{video_mode:02x}, columns={video_columns}, page={active_page}"
+            )
 
         elif ah == 0x1A:
             # Get Display Combination Code
             al = uc.reg_read(UC_X86_REG_AX) & 0xFF
-            if self.verbose:
-                print(f"[INT 0x10] Get Display Combination Code: AL=0x{al:02X}")
+            self.log.interrupt(
+                f"[INT 0x10] Get Display Combination Code: al=0x{al:02x}"
+            )
 
             # Return: AL=0x1A (function supported), BL=display combination code
             # Display combination code 0x08 = VGA with color display
@@ -1435,17 +1433,15 @@ class BootloaderEmulator:
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
             uc.reg_write(UC_X86_REG_EFLAGS, flags & ~0x0001)
 
-            if self.verbose:
-                print("  - Returning: AL=0x1A, BL=0x08 (VGA color)")
+            self.log.interrupt("  - Returning: AL=0x1A, BL=0x08 (VGA color)")
 
         elif ah == 0x1B:
             # Get Functionality/State Information
             al = uc.reg_read(UC_X86_REG_AX) & 0xFF
             bx = uc.reg_read(UC_X86_REG_BX) & 0xFF
-            if self.verbose:
-                print(
-                    f"[INT 0x10] Get Functionality/State Information: AL=0x{al:02X}, BL=0x{bx:02X}"
-                )
+            self.log.interrupt(
+                f"[INT 0x10] Get Functionality/State Information: AL=0x{al:02x}, BL=0x{bx:02x}"
+            )
 
             if bx == 0x00:
                 # Return functionality state information
@@ -1459,8 +1455,7 @@ class BootloaderEmulator:
                 uc.reg_write(UC_X86_REG_EFLAGS, flags | 0x0001)  # Set CF (error)
 
         else:
-            if self.verbose:
-                print(f"[INT 0x10] Unhandled function AH=0x{ah:02X}")
+            self.log.interrupt(f"[INT 0x10] Unhandled function AH=0x{ah:02x}")
             uc.emu_stop()
 
     def handle_int13(self, uc: Uc):
@@ -1491,23 +1486,20 @@ class BootloaderEmulator:
 
         # Validate drive number for most operations
         if ah not in [0x00, 0x08, 0x15, 0x41, 0x42, 0x48] and dl != self.drive_number:
-            if self.verbose:
-                print(
-                    f"[INT 0x13] Function AH=0x{ah:02X} for drive 0x{dl:02X} - drive not found"
-                )
+            self.log.interrupt(
+                f"[INT 0x13] Function AH=0x{ah:02x} for drive 0x{dl:02x} - drive not found"
+            )
             ret_ah = 0x80  # Drive not ready/timeout
             error = True
 
         elif ah == 0x00:
             # Reset disk system
-            if self.verbose:
-                print(f"[INT 0x13] Reset disk system for drive 0x{dl:02X}")
+            self.log.interrupt(f"[INT 0x13] Reset disk system for drive 0x{dl:02x}")
             ret_ah = 0x00
 
         elif ah == 0x01:
             # Get disk status
-            if self.verbose:
-                print(f"[INT 0x13] Get disk status for drive 0x{dl:02X}")
+            self.log.interrupt(f"[INT 0x13] Get disk status for drive 0x{dl:02x}")
             ret_ah = 0x00
             ret_al = 0x00  # Last operation status (no error)
 
@@ -1519,27 +1511,26 @@ class BootloaderEmulator:
             sectors_to_read = al
             buffer_addr = (es << 4) + bx
 
-            if self.verbose:
-                print(f"[INT 0x13] Read sectors (CHS) for drive 0x{dl:02X}")
-                print(
-                    f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_read}"
-                )
-                print(f"  - Buffer: 0x{es:04X}:0x{bx:04X} (0x{buffer_addr:05X})")
+            self.log.interrupt(f"[INT 0x13] Read sectors (CHS) for drive 0x{dl:02x}")
+            self.log.interrupt(
+                f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_read}"
+            )
+            self.log.interrupt(
+                f"  - Buffer: 0x{es:04x}:0x{bx:04x} (0x{buffer_addr:05x})"
+            )
 
             # Validate CHS values
             if sector == 0 or sector > self.sectors_per_track:
-                if self.verbose:
-                    print(
-                        f"  ⚠ Invalid sector: {sector} (valid: 1-{self.sectors_per_track})"
-                    )
+                self.log.interrupt(
+                    f"  ⚠ Invalid sector: {sector} (valid: 1-{self.sectors_per_track})"
+                )
                 ret_ah = 0x04  # Sector not found
                 ret_al = 0x00
                 error = True
             elif cylinder >= self.cylinders or head >= self.heads:
-                if self.verbose:
-                    print(
-                        f"  ⚠ Invalid CHS: C={cylinder} H={head} (max: {self.cylinders - 1}C, {self.heads - 1}H)"
-                    )
+                self.log.interrupt(
+                    f"  ⚠ Invalid CHS: C={cylinder} H={head} (max: {self.cylinders - 1}C, {self.heads - 1}H)"
+                )
                 ret_ah = 0x04  # Sector not found
                 ret_al = 0x00
                 error = True
@@ -1548,26 +1539,25 @@ class BootloaderEmulator:
                     sector - 1
                 )
 
-                if self.verbose:
-                    print(f"  - Converted to LBA: {lba}")
+                self.log.interrupt(f"  - Converted to LBA: {lba}")
 
                 disk_offset = lba * 512
                 bytes_to_read = sectors_to_read * 512
 
                 if disk_offset + bytes_to_read > self.disk_size:
-                    if self.verbose:
-                        print("  ⚠ Read beyond disk image!")
+                    self.log.interrupt("  ⚠ Read beyond disk image!")
                     ret_ah = 0x04  # Sector not found
                     ret_al = 0x00
                     error = True
                 else:
                     for i in range(sectors_to_read):
                         sector_data = self.sector_read(lba + i)
-                        if self.verbose:
-                            print(
-                                f"  ✓ Read {bytes_to_read} bytes from LBA {lba} to 0x{buffer_addr:05X}"
-                            )
-                            print(f"  - Data (32 bytes): {sector_data[:32].hex(' ')}")
+                        self.log.interrupt(
+                            f"  ✓ Read {bytes_to_read} bytes from LBA {lba} to 0x{buffer_addr:05x}"
+                        )
+                        self.log.interrupt(
+                            f"  - Data (32 bytes): {sector_data[:32].hex(' ')}"
+                        )
                         self.mem_write(buffer_addr + i * 512, sector_data)
                     ret_ah = 0x00
                     ret_al = sectors_to_read  # Sectors actually read
@@ -1580,17 +1570,17 @@ class BootloaderEmulator:
             sectors_to_write = al
             buffer_addr = (es << 4) + bx
 
-            if self.verbose:
-                print(f"[INT 0x13] Write sectors (CHS) for drive 0x{dl:02X}")
-                print(
-                    f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_write}"
-                )
-                print(f"  - Buffer: 0x{es:04X}:0x{bx:04X} (0x{buffer_addr:05X})")
+            self.log.interrupt(f"[INT 0x13] Write sectors (CHS) for drive 0x{dl:02x}")
+            self.log.interrupt(
+                f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_write}"
+            )
+            self.log.interrupt(
+                f"  - Buffer: 0x{es:04x}:0x{bx:04x} (0x{buffer_addr:05x})"
+            )
 
             lba = (cylinder * self.heads + head) * self.sectors_per_track + (sector - 1)
 
-            if self.verbose:
-                print(f"  - Converted to LBA: {lba}")
+            self.log.interrupt(f"  - Converted to LBA: {lba}")
 
             disk_offset = lba * 512
             bytes_to_write = sectors_to_write * 512
@@ -1599,23 +1589,20 @@ class BootloaderEmulator:
                 data = uc.mem_read(buffer_addr, bytes_to_write)
                 for i in range(sectors_to_write):
                     sector_data = data[i * 512 : (i + 1) * 512]
-                    if self.verbose:
-                        print(
-                            f"    - Writing sector {i + 1}/{sectors_to_write} to LBA {lba + i}"
-                        )
+                    self.log.interrupt(
+                        f"    - Writing sector {i + 1}/{sectors_to_write} to LBA {lba + i}"
+                    )
                     self.sector_write(lba + i, sector_data)
 
-                if self.verbose:
-                    print(
-                        f"  ✓ Wrote {bytes_to_write} bytes to LBA {lba} from 0x{buffer_addr:05X}"
-                    )
-                    print(f"  - Data (32 bytes): {bytes(data[:32]).hex(' ')}")
+                self.log.interrupt(
+                    f"  ✓ Wrote {bytes_to_write} bytes to LBA {lba} from 0x{buffer_addr:05x}"
+                )
+                self.log.interrupt(f"  - Data (32 bytes): {bytes(data[:32]).hex(' ')}")
 
                 ret_ah = 0x00
                 ret_al = sectors_to_write  # Sectors actually written
             else:
-                if self.verbose:
-                    print("  ⚠ Write beyond disk image!")
+                self.log.interrupt("  ⚠ Write beyond disk image!")
                 ret_ah = 0x04  # Sector not found
                 ret_al = 0x00
                 error = True
@@ -1627,11 +1614,10 @@ class BootloaderEmulator:
             head = dh
             sectors_to_verify = al
 
-            if self.verbose:
-                print(f"[INT 0x13] Verify sectors (CHS) for drive 0x{dl:02X}")
-                print(
-                    f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_verify}"
-                )
+            self.log.interrupt(f"[INT 0x13] Verify sectors (CHS) for drive 0x{dl:02x}")
+            self.log.interrupt(
+                f"  - CHS: C={cylinder} H={head} S={sector}, Sectors={sectors_to_verify}"
+            )
 
             lba = (cylinder * self.heads + head) * self.sectors_per_track + (sector - 1)
             disk_offset = lba * 512
@@ -1647,8 +1633,7 @@ class BootloaderEmulator:
 
         elif ah == 0x08:
             # Get drive parameters - WRITES CX/DX
-            if self.verbose:
-                print(f"[INT 0x13] Get drive parameters for drive 0x{dl:02X}")
+            self.log.interrupt(f"[INT 0x13] Get drive parameters for drive 0x{dl:02x}")
 
             if dl < 0x80:  # Floppy
                 ret_ah = 0x01  # Invalid parameter for now
@@ -1671,20 +1656,18 @@ class BootloaderEmulator:
 
                 ret_ah = 0x00
 
-                if self.verbose:
-                    print(
-                        f"  - Returning geometry: C={self.cylinders}, H={self.heads}, S={self.sectors_per_track}"
-                    )
-                    print(f"  - CX=0x{cx_value:04X}, DX=0x{dx_value:04X}")
+                self.log.interrupt(
+                    f"  - Returning geometry: C={self.cylinders}, H={self.heads}, S={self.sectors_per_track}"
+                )
+                self.log.interrupt(f"  - CX=0x{cx_value:04x}, DX=0x{dx_value:04x}")
 
         elif ah == 0x0C:
             # Seek to track (CHS addressing)
             cylinder = ch | ((cl & 0xC0) << 2)
             head = dh
 
-            if self.verbose:
-                print(f"[INT 0x13] Seek to track for drive 0x{dl:02X}")
-                print(f"  - Cylinder={cylinder}, Head={head}")
+            self.log.interrupt(f"[INT 0x13] Seek to track for drive 0x{dl:02x}")
+            self.log.interrupt(f"  - Cylinder={cylinder}, Head={head}")
 
             if cylinder < self.cylinders and head < self.heads:
                 ret_ah = 0x00
@@ -1694,14 +1677,14 @@ class BootloaderEmulator:
 
         elif ah == 0x0D:
             # Reset hard disk controller
-            if self.verbose:
-                print(f"[INT 0x13] Reset hard disk controller for drive 0x{dl:02X}")
+            self.log.interrupt(
+                f"[INT 0x13] Reset hard disk controller for drive 0x{dl:02x}"
+            )
             ret_ah = 0x00
 
         elif ah == 0x15:
             # Get disk type - WRITES CX/DX for fixed disks
-            if self.verbose:
-                print(f"[INT 0x13] Get disk type for drive 0x{dl:02X}")
+            self.log.interrupt(f"[INT 0x13] Get disk type for drive 0x{dl:02x}")
 
             if dl < 0x80:
                 ret_ah = 0x00  # No disk or unsupported
@@ -1715,8 +1698,9 @@ class BootloaderEmulator:
 
         elif ah == 0x41:
             # Check INT 13 extensions present - WRITES BX/CX
-            if self.verbose:
-                print(f"[INT 0x13] Check extensions present for drive 0x{dl:02X}")
+            self.log.interrupt(
+                f"[INT 0x13] Check extensions present for drive 0x{dl:02x}"
+            )
 
             if bx == 0x55AA:
                 ret_ah = 0x30  # Version 3.0
@@ -1728,8 +1712,7 @@ class BootloaderEmulator:
 
         elif ah == 0x42:
             # Extended read - LBA
-            if self.verbose:
-                print(f"[INT 0x13] Extended read for drive 0x{dl:02X}")
+            self.log.interrupt(f"[INT 0x13] Extended read for drive 0x{dl:02x}")
 
             packet_addr = (ds << 4) + si
             packet = uc.mem_read(packet_addr, 16)
@@ -1737,8 +1720,9 @@ class BootloaderEmulator:
             packet_size = packet[0]
             # Validate packet size (must be at least 16 bytes)
             if packet_size < 16:
-                if self.verbose:
-                    print(f"  ⚠ Invalid DAP size: {packet_size} (must be >= 16)")
+                self.log.interrupt(
+                    f"  ⚠ Invalid DAP size: {packet_size} (must be >= 16)"
+                )
                 ret_ah = 0x01  # Invalid command
                 error = True
             else:
@@ -1747,42 +1731,41 @@ class BootloaderEmulator:
                 segment = struct.unpack("<H", packet[6:8])[0]
                 lba = struct.unpack("<Q", packet[8:16])[0]
 
-                if self.verbose:
-                    print(
-                        f"  - LBA: {lba}, Sectors: {sectors}, Buffer: 0x{segment:04X}:0x{offset:04X}"
-                    )
+                self.log.interrupt(
+                    f"  - LBA: {lba}, Sectors: {sectors}, Buffer: 0x{segment:04x}:0x{offset:04x}"
+                )
 
                 disk_offset = lba * 512
                 buffer_addr = (segment << 4) + offset
                 bytes_to_read = sectors * 512
 
                 if disk_offset + bytes_to_read > self.disk_size:
-                    if self.verbose:
-                        print("  ⚠ Read beyond disk image!")
+                    self.log.interrupt("  ⚠ Read beyond disk image!")
                     ret_ah = 0x01  # Invalid command
                     error = True
                 else:
                     for i in range(sectors):
                         sector_data = self.sector_read(lba + i)
-                        if self.verbose:
-                            print(
-                                f"  ✓ Read sector {i + 1}/{sectors} from LBA {lba + i} to 0x{buffer_addr + i * 512:05X}"
-                            )
-                            print(f"    - Data (32 bytes): {sector_data[:32].hex(' ')}")
+                        self.log.interrupt(
+                            f"  ✓ Read sector {i + 1}/{sectors} from LBA {lba + i} to 0x{buffer_addr + i * 512:05x}"
+                        )
+                        self.log.interrupt(
+                            f"    - Data (32 bytes): {sector_data[:32].hex(' ')}"
+                        )
                         self.mem_write(buffer_addr + i * 512, sector_data)
                     ret_ah = 0x00
 
         elif ah == 0x48:
             # Get extended drive parameters
-            if self.verbose:
-                print(f"[INT 0x13] Get extended drive parameters for drive 0x{dl:02X}")
+            self.log.interrupt(
+                f"[INT 0x13] Get extended drive parameters for drive 0x{dl:02x}"
+            )
 
             buffer_addr = (ds << 4) + si
             buffer_header = uc.mem_read(buffer_addr, 2)
             buffer_size = struct.unpack("<H", buffer_header)[0]
 
-            if self.verbose:
-                print(f"  - Buffer size requested: {buffer_size} bytes")
+            self.log.interrupt(f"  - Buffer size requested: {buffer_size} bytes")
 
             total_sectors = self.disk_size // 512
 
@@ -1798,15 +1781,13 @@ class BootloaderEmulator:
             bytes_to_write = min(buffer_size, 26)
             uc.mem_write(buffer_addr, bytes(params[:bytes_to_write]))
 
-            if self.verbose:
-                print(f"  - Returned {bytes_to_write} bytes")
-                print(f"  - Total sectors: {total_sectors}")
+            self.log.interrupt(f"  - Returned {bytes_to_write} bytes")
+            self.log.interrupt(f"  - Total sectors: {total_sectors}")
 
             ret_ah = 0x00
 
         else:
-            if self.verbose:
-                print(f"[INT 0x13] Unhandled function AH=0x{ah:02X}")
+            self.log.interrupt(f"[INT 0x13] Unhandled function AH=0x{ah:02x}")
             uc.emu_stop()
             return
 
@@ -1821,26 +1802,22 @@ class BootloaderEmulator:
 
     def handle_int11(self, uc: Uc):
         """Handle INT 0x11 - Get Equipment List"""
-        if self.verbose:
-            print("[INT 0x11] Get equipment list")
+        self.log.interrupt("[INT 0x11] Get equipment list")
         # AX = equipment list word
 
         # Read from BDA if enabled, otherwise use default
         equipment = self.bda.equipment_list
-        if self.verbose:
-            print(f"  - Equipment from BDA: 0x{equipment:04X}")
+        self.log.interrupt(f"  - Equipment from BDA: 0x{equipment:04x}")
 
         uc.reg_write(UC_X86_REG_AX, equipment)
 
     def handle_int12(self, uc: Uc):
         """Handle INT 0x12 - Get Memory Size"""
-        if self.verbose:
-            print("[INT 0x12] Get memory size")
+        self.log.interrupt("[INT 0x12] Get memory size")
         # AX = memory size in KB (conventional memory, typically 640KB)
 
         memory_size_kb = self.bda.memory_size_kb
-        if self.verbose:
-            print(f"  - Memory size from BDA: {memory_size_kb} KB")
+        self.log.interrupt(f"  - Memory size from BDA: {memory_size_kb} KB")
 
         uc.reg_write(UC_X86_REG_AX, memory_size_kb)
 
@@ -1850,8 +1827,7 @@ class BootloaderEmulator:
 
         if ah == 0x88:
             # Get extended memory size
-            if self.verbose:
-                print("[INT 0x15] Get extended memory size")
+            self.log.interrupt("[INT 0x15] Get extended memory size")
             # AX = extended memory in KB (above 1MB)
             uc.reg_write(UC_X86_REG_AX, 0)  # No extended memory
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
@@ -1859,8 +1835,7 @@ class BootloaderEmulator:
 
         elif ah == 0xC0:
             # Get system configuration
-            if self.verbose:
-                print("[INT 0x15] Get system configuration")
+            self.log.interrupt("[INT 0x15] Get system configuration")
             # ES:BX = pointer to configuration table
             # For now, return error
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
@@ -1878,16 +1853,18 @@ class BootloaderEmulator:
 
                 # Check buffer size (need at least 20 bytes for standard entry)
                 if ecx < 20:
-                    if self.verbose:
-                        print(f"[INT 0x15, E820] Buffer too small: {ecx} bytes (need 20)")
+                    self.log.interrupt(
+                        f"[INT 0x15, E820] Buffer too small: {ecx} bytes (need 20)"
+                    )
                     flags = uc.reg_read(UC_X86_REG_EFLAGS)
                     uc.reg_write(UC_X86_REG_EFLAGS, flags | 0x0001)  # Set CF
                     return
 
                 # Check for SMAP signature
                 if edx != 0x534D4150:  # 'SMAP'
-                    if self.verbose:
-                        print(f"[INT 0x15, E820] Invalid signature: 0x{edx:08X}")
+                    self.log.interrupt(
+                        f"[INT 0x15, E820] Invalid signature: 0x{edx:08x}"
+                    )
                     flags = uc.reg_read(UC_X86_REG_EFLAGS)
                     uc.reg_write(UC_X86_REG_EFLAGS, flags | 0x0001)  # Set CF
                     return
@@ -1910,8 +1887,9 @@ class BootloaderEmulator:
 
                 if entry_index >= len(memory_map):
                     # No more entries
-                    if self.verbose:
-                        print(f"[INT 0x15, E820] No more entries (index={entry_index})")
+                    self.log.interrupt(
+                        f"[INT 0x15, E820] No more entries (index={entry_index})"
+                    )
                     flags = uc.reg_read(UC_X86_REG_EFLAGS)
                     uc.reg_write(UC_X86_REG_EFLAGS, flags | 0x0001)  # Set CF
                     return
@@ -1921,11 +1899,10 @@ class BootloaderEmulator:
                     entry_index
                 ]
 
-                if self.verbose:
-                    print(
-                        f"[INT 0x15, E820] Entry {entry_index}: base=0x{base_high:08X}{base_low:08X}, "
-                        f"length=0x{length_high:08X}{length_low:08X}, type={mem_type}"
-                    )
+                self.log.interrupt(
+                    f"[INT 0x15, E820] Entry {entry_index}: base=0x{base_high:08x}{base_low:08x}, "
+                    f"length=0x{length_high:08x}{length_low:08x}, type={mem_type}"
+                )
 
                 # Write entry to ES:DI
                 addr = (es << 4) + di
@@ -1949,31 +1926,29 @@ class BootloaderEmulator:
                 flags = uc.reg_read(UC_X86_REG_EFLAGS)
                 uc.reg_write(UC_X86_REG_EFLAGS, flags & ~0x0001)
             else:
-                if self.verbose:
-                    print(f"[INT 0x15] Unhandled E8h subfunction AL=0x{al:02X}")
+                self.log.interrupt(
+                    f"[INT 0x15] Unhandled E8h subfunction AL=0x{al:02x}"
+                )
                 flags = uc.reg_read(UC_X86_REG_EFLAGS)
                 uc.reg_write(UC_X86_REG_EFLAGS, flags | 0x0001)
 
         elif ah == 0x41:
             # Wait on External Event (PC Convertible) - obsolete
             # Also used by some code to probe for non-standard BIOS extensions
-            if self.verbose:
-                print("[INT 0x15] Wait on external event (unsupported)")
+            self.log.interrupt("[INT 0x15] Wait on external event (unsupported)")
             # Return error (set CF)
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
             uc.reg_write(UC_X86_REG_EFLAGS, flags | 0x0001)
 
         elif ah == 0x53:
             # APM BIOS functions
-            if self.verbose:
-                print(f"[INT 0x15] APM BIOS function AH=0x{ah:02X}")
+            self.log.interrupt(f"[INT 0x15] APM BIOS function AH=0x{ah:02x}")
             # Return error (unsupported)
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
             uc.reg_write(UC_X86_REG_EFLAGS, flags | 0x0001)
 
         else:
-            if self.verbose:
-                print(f"[INT 0x15] Unhandled function AH=0x{ah:02X}")
+            self.log.interrupt(f"[INT 0x15] Unhandled function AH=0x{ah:02x}")
             uc.emu_stop()
 
     def handle_int16(self, uc: Uc):
@@ -1982,28 +1957,24 @@ class BootloaderEmulator:
 
         if ah == 0x00:
             # Read keystroke
-            if self.verbose:
-                print("[INT 0x16] Read keystroke")
+            self.log.interrupt("[INT 0x16] Read keystroke")
             # For emulation, simulate pressing Enter (0x1C)
             uc.reg_write(UC_X86_REG_AX, 0x1C0D)  # AL=0x0D (CR), AH=0x1C (scancode)
 
         elif ah == 0x01:
             # Check for keystroke
-            if self.verbose:
-                print("[INT 0x16] Check for keystroke")
+            self.log.interrupt("[INT 0x16] Check for keystroke")
             # ZF=1 if no key available (set ZF)
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
             uc.reg_write(UC_X86_REG_EFLAGS, flags | 0x0040)  # Set ZF
 
         elif ah == 0x02:
             # Get shift flags
-            if self.verbose:
-                print("[INT 0x16] Get shift flags")
+            self.log.interrupt("[INT 0x16] Get shift flags")
             uc.reg_write(UC_X86_REG_AX, 0)  # No modifiers
 
         else:
-            if self.verbose:
-                print(f"[INT 0x16] Unhandled function AH=0x{ah:02X}")
+            self.log.interrupt(f"[INT 0x16] Unhandled function AH=0x{ah:02x}")
             uc.emu_stop()
 
     def handle_int14(self, uc: Uc):
@@ -2013,8 +1984,7 @@ class BootloaderEmulator:
 
         if ah == 0x00:
             # Initialize serial port
-            if self.verbose:
-                print(f"[INT 0x14] Initialize serial port DL=0x{dx:02X}")
+            self.log.interrupt(f"[INT 0x14] Initialize serial port DL=0x{dx:02x}")
             # Return success: AH = 0 (initialized), AL = line status
             # BIT 7: DCD (Data Carrier Detect), BIT 5: TX Buffer Empty
             uc.reg_write(UC_X86_REG_AX, (uc.reg_read(UC_X86_REG_AX) & 0xFF) | 0x2000)
@@ -2025,14 +1995,16 @@ class BootloaderEmulator:
         elif ah == 0x01:
             # Write character to serial port
             al = uc.reg_read(UC_X86_REG_AX) & 0xFF
-            if self.verbose:
-                print(
-                    f"[INT 0x14] Write character to serial port: 0x{al:02X} ({chr(al) if 32 <= al < 127 else '?'})"
-                )
+            self.log.interrupt(
+                f"[INT 0x14] Write character to serial port: 0x{al:02x} ({chr(al) if 32 <= al < 127 else '?'})"
+            )
+            if al == 0x0D:
+                char = "\r"
+            elif al == 0x0A:
+                char = "\n"
             else:
-                # Always output serial writes for visibility
-                if 32 <= al < 127 or al in (0x0A, 0x0D):
-                    print(f"[SERIAL] {chr(al)}", end="", flush=True)
+                char = chr(al) if 32 <= al < 127 else f"\\x{al:02x}"
+            self.serial_output += char
             # Return success in AH = 0 (ready), CF = 0
             uc.reg_write(UC_X86_REG_AX, (uc.reg_read(UC_X86_REG_AX) & 0xFF) | 0x0000)
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
@@ -2040,8 +2012,7 @@ class BootloaderEmulator:
 
         elif ah == 0x02:
             # Read character from serial port
-            if self.verbose:
-                print("[INT 0x14] Read character from serial port")
+            self.log.interrupt("[INT 0x14] Read character from serial port")
             # Return timeout (AH bit 7 set for error)
             uc.reg_write(UC_X86_REG_AX, (uc.reg_read(UC_X86_REG_AX) & 0xFF) | 0x8000)
             # Set CF (error/timeout)
@@ -2050,8 +2021,7 @@ class BootloaderEmulator:
 
         elif ah == 0x03:
             # Get serial port status
-            if self.verbose:
-                print("[INT 0x14] Get serial port status")
+            self.log.interrupt("[INT 0x14] Get serial port status")
             # AH = line status (TX buffer empty, etc.)
             # AL = modem status
             uc.reg_write(UC_X86_REG_AX, 0x6000)  # TX buffer empty, ready
@@ -2059,8 +2029,7 @@ class BootloaderEmulator:
             uc.reg_write(UC_X86_REG_EFLAGS, flags & ~0x0001)
 
         else:
-            if self.verbose:
-                print(f"[INT 0x14] Unhandled function AH=0x{ah:02X}")
+            self.log.interrupt(f"[INT 0x14] Unhandled function AH=0x{ah:02x}")
             uc.emu_stop()
 
     def handle_int17(self, uc: Uc):
@@ -2083,11 +2052,10 @@ class BootloaderEmulator:
 
         if ah == 0x00:
             # Print character
-            if self.verbose:
-                al = uc.reg_read(UC_X86_REG_AX) & 0xFF
-                print(
-                    f"[INT 0x17] Print character 0x{al:02X} to printer {dx} (OFFLINE)"
-                )
+            al = uc.reg_read(UC_X86_REG_AX) & 0xFF
+            self.log.interrupt(
+                f"[INT 0x17] Print character 0x{al:02x} to printer {dx} (OFFLINE)"
+            )
             # Return offline status in AH
             uc.reg_write(
                 UC_X86_REG_AX,
@@ -2099,8 +2067,7 @@ class BootloaderEmulator:
 
         elif ah == 0x01:
             # Initialize printer
-            if self.verbose:
-                print(f"[INT 0x17] Initialize printer {dx} (OFFLINE)")
+            self.log.interrupt(f"[INT 0x17] Initialize printer {dx} (OFFLINE)")
             # Return offline status in AH
             uc.reg_write(
                 UC_X86_REG_AX,
@@ -2112,8 +2079,9 @@ class BootloaderEmulator:
 
         elif ah == 0x02:
             # Get printer status
-            if self.verbose:
-                print(f"[INT 0x17] Get printer status for printer {dx} (OFFLINE)")
+            self.log.interrupt(
+                f"[INT 0x17] Get printer status for printer {dx} (OFFLINE)"
+            )
             # Return offline status in AH
             uc.reg_write(
                 UC_X86_REG_AX,
@@ -2124,8 +2092,7 @@ class BootloaderEmulator:
             uc.reg_write(UC_X86_REG_EFLAGS, flags | 0x0001)
 
         else:
-            if self.verbose:
-                print(f"[INT 0x17] Unhandled function AH=0x{ah:02X}")
+            self.log.interrupt(f"[INT 0x17] Unhandled function AH=0x{ah:02x}")
             uc.emu_stop()
 
     def handle_int1a(self, uc: Uc):
@@ -2135,8 +2102,7 @@ class BootloaderEmulator:
         if ah == 0x00:
             # Get system time (clock ticks since midnight)
             # Returns: CX:DX = number of ticks (1 tick = 1/18.2 seconds)
-            if self.verbose:
-                print("[INT 0x1A] Get system time")
+            self.log.interrupt("[INT 0x1A] Get system time")
             # Simulate a time value: 65536 ticks = ~1 hour at 18.2 ticks/sec
             # Return a reasonable time like 2 hours into the day
             ticks = 65536 * 2  # ~2 hours worth of ticks
@@ -2152,10 +2118,11 @@ class BootloaderEmulator:
 
         elif ah == 0x01:
             # Set system time
-            if self.verbose:
-                cx = uc.reg_read(UC_X86_REG_CX)
-                dx = uc.reg_read(UC_X86_REG_DX)
-                print(f"[INT 0x1A] Set system time CX:DX=0x{cx:04X}:0x{dx:04X}")
+            cx = uc.reg_read(UC_X86_REG_CX)
+            dx = uc.reg_read(UC_X86_REG_DX)
+            self.log.interrupt(
+                f"[INT 0x1A] Set system time CX:DX=0x{cx:04x}:0x{dx:04x}"
+            )
             # Just acknowledge, no real action needed
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
             uc.reg_write(UC_X86_REG_EFLAGS, flags & ~0x0001)
@@ -2163,8 +2130,7 @@ class BootloaderEmulator:
         elif ah == 0x02:
             # Get RTC time (hours, minutes, seconds in BCD)
             # Returns: CH=hours, CL=minutes, DH=seconds, DL=daylight saving (0=standard)
-            if self.verbose:
-                print("[INT 0x1A] Get RTC time")
+            self.log.interrupt("[INT 0x1A] Get RTC time")
             # Return a reasonable time: 08:30:45
             hours_bcd = 0x08  # 8 in BCD
             minutes_bcd = 0x30  # 30 in BCD
@@ -2178,10 +2144,9 @@ class BootloaderEmulator:
 
         elif ah == 0x03:
             # Set RTC time
-            if self.verbose:
-                cx = uc.reg_read(UC_X86_REG_CX)
-                dx = uc.reg_read(UC_X86_REG_DX)
-                print(f"[INT 0x1A] Set RTC time CX=0x{cx:04X}, DX=0x{dx:04X}")
+            cx = uc.reg_read(UC_X86_REG_CX)
+            dx = uc.reg_read(UC_X86_REG_DX)
+            self.log.interrupt(f"[INT 0x1A] Set RTC time CX=0x{cx:04x}, DX=0x{dx:04x}")
             # Just acknowledge
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
             uc.reg_write(UC_X86_REG_EFLAGS, flags & ~0x0001)
@@ -2189,8 +2154,7 @@ class BootloaderEmulator:
         elif ah == 0x04:
             # Get RTC date (year, month, day of month in BCD)
             # Returns: CX=year, DH=month, DL=day
-            if self.verbose:
-                print("[INT 0x1A] Get RTC date")
+            self.log.interrupt("[INT 0x1A] Get RTC date")
             # Return a reasonable date: 1990-01-15
             year_bcd = 0x1990  # 1990 in BCD format
             month_bcd = 0x01  # January in BCD
@@ -2203,33 +2167,29 @@ class BootloaderEmulator:
 
         elif ah == 0x05:
             # Set RTC date
-            if self.verbose:
-                cx = uc.reg_read(UC_X86_REG_CX)
-                dx = uc.reg_read(UC_X86_REG_DX)
-                print(f"[INT 0x1A] Set RTC date CX=0x{cx:04X}, DX=0x{dx:04X}")
+            cx = uc.reg_read(UC_X86_REG_CX)
+            dx = uc.reg_read(UC_X86_REG_DX)
+            self.log.interrupt(f"[INT 0x1A] Set RTC date CX=0x{cx:04x}, DX=0x{dx:04x}")
             # Just acknowledge
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
             uc.reg_write(UC_X86_REG_EFLAGS, flags & ~0x0001)
 
         elif ah == 0x06:
             # Set RTC alarm
-            if self.verbose:
-                print("[INT 0x1A] Set RTC alarm")
+            self.log.interrupt("[INT 0x1A] Set RTC alarm")
             # Just acknowledge
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
             uc.reg_write(UC_X86_REG_EFLAGS, flags & ~0x0001)
 
         elif ah == 0x07:
             # Reset RTC alarm
-            if self.verbose:
-                print("[INT 0x1A] Reset RTC alarm")
+            self.log.interrupt("[INT 0x1A] Reset RTC alarm")
             # Just acknowledge
             flags = uc.reg_read(UC_X86_REG_EFLAGS)
             uc.reg_write(UC_X86_REG_EFLAGS, flags & ~0x0001)
 
         else:
-            if self.verbose:
-                print(f"[INT 0x1A] Unhandled function AH=0x{ah:02X}")
+            self.log.interrupt(f"[INT 0x1A] Unhandled function AH=0x{ah:02x}")
             uc.emu_stop()
 
     def hook_mem_invalid(self, uc: Uc, access, address, size, value, user_data):
@@ -2241,8 +2201,8 @@ class BootloaderEmulator:
             if access == UC_MEM_WRITE
             else "EXEC"
         )
-        print(
-            f"\n[!] Invalid memory access: {access_type} at 0x{address:08X} (size: {size})"
+        self.log.console(
+            f"\n[!] Invalid memory access: {access_type} at 0x{address:08x} (size: {size})"
         )
         self.last_exception = f"Invalid memory {access_type}"
         return False
@@ -2262,18 +2222,13 @@ class BootloaderEmulator:
             access_type = "IVT WRITE"
 
         # Format the trace line
-        line = f"[{access_type}] 0x{address:04X} | size={size} | int={int_num:02X} | value=0x{value:X} | ip=0x{ip:04X}"
+        line = f"[{access_type}] 0x{address:04x} | size={size} | int={int_num:02x} | value=0x{value:04x} | ip=0x{ip:04x} | intseq={self.intterrupt_seq}"
+        self.intterrupt_seq += 1
         if int_num in IVT_NAMES:
-            line += f"| name = {IVT_NAMES[int_num]}"
-        line += "\n"
-
-        # Write to trace file unconditionally
-        if self.trace_output:
-            self.trace_output.write(line)
+            line += f" | name = {IVT_NAMES[int_num]}"
 
         # Also print to console if verbose
-        if self.verbose:
-            print(line.strip())
+        self.log.interrupt(line)
 
         return True
 
@@ -2290,7 +2245,7 @@ class BootloaderEmulator:
             page_index = (bda_offset - 0x50) // 2
             row = (value >> 8) & 0xFF
             col = value & 0xFF
-            print(
+            self.log.interrupt(
                 f"  -> Hardware sync: cursor_pos[{page_index}] = (row={row}, col={col})"
             )
             return True
@@ -2319,36 +2274,27 @@ class BootloaderEmulator:
         if field_info:
             field_name, field_desc, field_size = field_info
             policy_name = ["PASSIVE", "BIOS_OWNED", "DENY"][policy]
-            line = f"[{access_type}] 0x{address:04X} | size={size} | field={field_name} | desc={field_desc} | value=0x{value:X} | ip=0x{ip:04X} | policy={policy_name}"
+            line = f"[{access_type}] 0x{address:04x} | size={size} | field={field_name} | desc={field_desc} | field_size={field_size} | value=0x{value:04x} | ip=0x{ip:04x} | policy={policy_name}"
         else:
-            line = f"[{access_type}] 0x{address:04X} | size={size} | value=0x{value:X} | ip=0x{ip:04X} | policy=PASSIVE"
-
-        line += "\n"
-
-        # Write to trace file unconditionally
-        if self.trace_output:
-            self.trace_output.write(line)
-
-        # Also print to console if verbose
-        if self.verbose:
-            print(line.strip())
+            line = f"[{access_type}] 0x{address:04x} | size={size} | value=0x{value:04x} | ip=0x{ip:04x} | policy=PASSIVE"
+        line += f" | intseq={self.intterrupt_seq}"
+        self.intterrupt_seq += 1
+        self.log.interrupt(line)
 
         # Handle writes based on policy
         if access == UC_MEM_WRITE:
             if policy == BDAPolicy.DENY:
                 old = uc.mem_read(address, size)
                 uc.mem_write(address, bytes(old))
-                if self.verbose:
-                    print("  -> DENIED (restored old value)")
+                self.log.interrupt(f"{line}\n  -> DENIED (restored old value)")
                 uc.emu_stop()
                 return False
             elif policy == BDAPolicy.BIOS_OWNED:
                 field_name = field_info[0] if field_info else "unknown"
                 if not self.sync_bda_hardware(bda_offset, value, size, field_name):
-                    if self.verbose:
-                        print(
-                            f"  -> BIOS_OWNED '{field_name}' not implemented, stopping"
-                        )
+                    self.log.console(
+                        f"{line}\n  -> BIOS_OWNED '{field_name}' not implemented, stopping"
+                    )
                     uc.emu_stop()
                     return False
             elif policy == BDAPolicy.PASSIVE:
@@ -2359,17 +2305,7 @@ class BootloaderEmulator:
 
     def run(self):
         """Run the emulator"""
-        print("\n" + "=" * 80)
-        print(f"Starting emulation (trace file: {self.trace_file})...")
-        print("=" * 80 + "\n")
-
-        # Open trace file
-        try:
-            self.trace_output = open(self.trace_file, "w")
-            print(f"[*] Writing trace to {self.trace_file}")
-        except Exception as e:
-            print(f"[!] Error opening trace file: {e}")
-            return
+        self.log.console("\nEmulating...")
 
         # Add hooks
         self.uc.hook_add(UC_HOOK_CODE, self.hook_code)
@@ -2406,43 +2342,44 @@ class BootloaderEmulator:
             # We'll use a very high end address and rely on instruction limit
             end_address = 0xFFFFFFFF
 
+            self._dump_registers("Initial register state")
             self.uc.emu_start(start_address, end_address)
+            self._dump_registers("Final register state")
 
         except UcError as e:
             error_ip = self.uc.reg_read(UC_X86_REG_IP)
-            print(f"\n[!] Emulation error at IP=0x{error_ip:04X}: {e}")
+            self.log.console(f"\n[!] Emulation error at IP=0x{error_ip:04x}: {e}")
 
             # Decode error
             if e.errno == UC_ERR_INSN_INVALID:
-                print("    Invalid instruction")
+                self.log.console("    Invalid instruction")
             elif e.errno == UC_ERR_READ_UNMAPPED:
-                print("    Read from unmapped memory")
+                self.log.console("    Read from unmapped memory")
             elif e.errno == UC_ERR_WRITE_UNMAPPED:
-                print("    Write to unmapped memory")
+                self.log.console("    Write to unmapped memory")
             elif e.errno == UC_ERR_FETCH_UNMAPPED:
-                print("    Fetch from unmapped memory")
+                self.log.console("    Fetch from unmapped memory")
 
         except KeyboardInterrupt:
-            print("\n\n[!] Interrupted by user")
+            self.log.console("\n\n[!] Interrupted by user")
 
         finally:
-            if self.trace_output:
-                self.trace_output.close()
+            self.log.close()
             self.print_summary()
 
     def print_summary(self):
         """Print execution summary"""
-        print("\n" + "=" * 80)
-        print("Emulation Summary")
-        print("=" * 80)
-        print(f"Total instructions executed: {self.instruction_count}")
+        self.log.console("\n" + "=" * 80)
+        self.log.console("Summary")
+        self.log.console("=" * 80)
+        self.log.console(f"Total instructions executed: {self.instruction_count}")
 
         # Get final register state
         ip = self.uc.reg_read(UC_X86_REG_IP)
         cs = self.uc.reg_read(UC_X86_REG_CS)
-        print(f"Final CS:IP: {cs:04x}:{ip:04x}")
+        self.log.console(f"Final CS:IP: {cs:04x}:{ip:04x}")
 
-        print("\nFinal register state:")
+        self.log.console("\nFinal register state:")
         regs = [
             ("AX", UC_X86_REG_AX),
             ("BX", UC_X86_REG_BX),
@@ -2456,9 +2393,9 @@ class BootloaderEmulator:
 
         for name, reg in regs:
             value = self.uc.reg_read(reg)
-            print(f"  {name}: 0x{value:04X}")
+            self.log.console(f"  {name}: 0x{value:04x}")
 
-        print("\nSegment registers:")
+        self.log.console("\nSegment registers:")
         segs = [
             ("CS", UC_X86_REG_CS),
             ("DS", UC_X86_REG_DS),
@@ -2467,22 +2404,25 @@ class BootloaderEmulator:
         ]
         for name, reg in segs:
             value = self.uc.reg_read(reg)
-            print(f"  {name}: 0x{value:04X}")
+            self.log.console(f"  {name}: 0x{value:04x}")
 
         # Show some memory around the boot sector
-        print(f"\nMemory at boot sector (0x{self.boot_address:04X}):")
+        self.log.console(f"\nMemory at boot sector (0x{self.boot_address:04x}):")
         try:
             mem = self.uc.mem_read(self.boot_address, 64)
             for i in range(0, 64, 16):
                 offset = self.boot_address + i
-                hex_bytes = " ".join(f"{b:02X}" for b in mem[i : i + 16])
+                hex_bytes = " ".join(f"{b:02x}" for b in mem[i : i + 16])
                 ascii_repr = "".join(
                     chr(b) if 32 <= b < 127 else "." for b in mem[i : i + 16]
                 )
-                print(f"  0x{offset:04X}: {hex_bytes:48s} | {ascii_repr}")
+                self.log.console(f"  0x{offset:04x}: {hex_bytes:48s} | {ascii_repr}")
         except Exception as e:
-            print(f"  Error reading memory: {e}")
+            self.log.console(f"  Error reading memory: {e}")
 
-        print(f"\n[*] Trace written to {self.trace_file}")
-        print(f"    Total instructions: {self.instruction_count}")
-        print(f"\n[*] Screen output:\n{self.screen_output}")
+        self.log.console(
+            f"\n[*] Logs written to: {self.log.instr_path}, {self.log.int_path}"
+        )
+        self.log.console(f"\n[*] Screen output:\n{self.screen_output}")
+        if self.serial_output:
+            self.log.console(f"\n[*] Serial output:\n{self.serial_output}")
