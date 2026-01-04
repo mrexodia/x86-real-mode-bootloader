@@ -1,3 +1,6 @@
+import ctypes
+from bootemu.emulator import BIOSDataArea, IVT_NAMES
+
 IVT = """
 53FF00F053FF00F0C3E200F053FF00F053FF00F054FF00F053FF00F053FF00F0A5FE00F087E900F0
 3DD400F03DD400F03DD400F03DD400F057EF00F03DD400F09AD200F04DF800F041F800F0FEE300F0
@@ -36,13 +39,13 @@ F803000000000000780300000000C09F2742007F0200000000001E001E0000000000000000000000
 00000000000000000000000000000000
 """
 
-import ctypes
-from emulator import BIOSDataArea, IVT_NAMES
 
 ivt = bytes.fromhex(IVT.strip())
 bda = BIOSDataArea.from_buffer_copy(bytes.fromhex(BDA.strip()))
 
-assert ctypes.sizeof(bda) == 256, f"Expected BIOS Data Area size 256, got {ctypes.sizeof(bda)}"
+assert ctypes.sizeof(bda) == 256, (
+    f"Expected BIOS Data Area size 256, got {ctypes.sizeof(bda)}"
+)
 
 print("BIOS Data Area:")
 for field in bda._fields_:
@@ -66,5 +69,5 @@ print("\nInterrupt Vector Table:")
 for i in range(256):
     offset = i * 4
     name = IVT_NAMES.get(i, "<unknown>")
-    entry = int.from_bytes(ivt[offset:offset+4], 'little')
+    entry = int.from_bytes(ivt[offset : offset + 4], "little")
     print(f"[{i:02x}]: 0x{entry:08X} -> {name}")
