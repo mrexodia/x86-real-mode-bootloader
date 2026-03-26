@@ -850,8 +850,28 @@ class BootloaderEmulator:
         # Check if we're executing from BIOS stub region
         # If so, always handle in Python regardless of IVT contents
         if STUB_BASE <= physical_addr < STUB_END:
-            # Executing from BIOS stub - handle in Python
+            # Executing from BIOS stub - handle in Python.
+            #
+            # The original INT instruction already pushed a return frame and then
+            # we redirected execution into the BIOS stub. The stub executes
+            # `INT n; IRET`, and the IRET reuses that existing return frame:
+            #   SP+0: return IP
+            #   SP+2: return CS
+            #   SP+4: FLAGS
+            #
+            # BIOS handlers may modify FLAGS (for example CF/ZF). Those modified
+            # flags must be written back to the saved FLAGS word on the stack,
+            # otherwise IRET restores the old pre-interrupt flags.
             self.handle_bios_interrupt(uc, intno)
+
+            sp = self.regs.sp
+            ss = self.regs.ss
+            stack_addr = (ss << 4) + sp + 4
+            new_flags = self.regs.flags & 0xFFFF
+            current_stack_flags = int.from_bytes(uc.mem_read(stack_addr, 2), "little")
+
+            if current_stack_flags != new_flags:
+                self.mem_write(stack_addr, new_flags.to_bytes(2, "little"))
             # IP is already advanced past the INT, so we're good
         else:
             # Not from stub - manually push interrupt frame and jump to IVT handler
