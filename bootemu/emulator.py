@@ -851,7 +851,33 @@ class BootloaderEmulator:
         # If so, always handle in Python regardless of IVT contents
         if STUB_BASE <= physical_addr < STUB_END:
             # Executing from BIOS stub - handle in Python
+            # Save original stack pointer before INT (for finding flags on stack)
+            sp_before = self.regs.sp
+
             self.handle_bios_interrupt(uc, intno)
+
+            # FIX: Update flags on stack so IRET will pop the correct values
+            # The stack layout after INT instruction in stub:
+            #   SP+0: Return IP (pushed by INT)
+            #   SP+2: Return CS (pushed by INT)
+            #   SP+4: Flags (pushed by INT) <- This needs to be updated!
+            # Note: SP has been decremented by 6 during the INT
+            sp_after = self.regs.sp
+
+            # Read the modified flags from the emulator
+            new_flags = self.regs.flags & 0xFFFF
+
+            # Update the flags on the stack (at SP+4)
+            ss = self.regs.ss
+            stack_addr = ss * 16 + sp_after + 4
+            current_stack_flags = int.from_bytes(
+                uc.mem_read(stack_addr, 2), "little"
+            )
+
+            # Only update if different (avoid unnecessary memory writes)
+            if current_stack_flags != new_flags:
+                self.mem_write(stack_addr, new_flags.to_bytes(2, "little"))
+
             # IP is already advanced past the INT, so we're good
         else:
             # Not from stub - manually push interrupt frame and jump to IVT handler

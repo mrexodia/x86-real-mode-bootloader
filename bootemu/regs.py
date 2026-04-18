@@ -21,6 +21,8 @@ from unicorn.x86_const import (
     UC_X86_REG_CS,
     UC_X86_REG_DS,
     UC_X86_REG_ES,
+    UC_X86_REG_FS,
+    UC_X86_REG_GS,
     UC_X86_REG_SS,
     UC_X86_REG_IP,
     UC_X86_REG_EFLAGS,
@@ -33,6 +35,11 @@ from unicorn.x86_const import (
     UC_X86_REG_EBP,
     UC_X86_REG_ESP,
     UC_X86_REG_EIP,
+    UC_X86_REG_CR0,
+    UC_X86_REG_CR1,
+    UC_X86_REG_CR2,
+    UC_X86_REG_CR3,
+    UC_X86_REG_CR4,
 )
 
 
@@ -118,7 +125,16 @@ class X86Regs:
     cs: int = reg(UC_X86_REG_CS)
     ds: int = reg(UC_X86_REG_DS)
     es: int = reg(UC_X86_REG_ES)
+    fs: int = reg(UC_X86_REG_FS)
+    gs: int = reg(UC_X86_REG_GS)
     ss: int = reg(UC_X86_REG_SS)
+
+    # Control registers
+    cr0: int = reg(UC_X86_REG_CR0)
+    cr1: int = reg(UC_X86_REG_CR1)
+    cr2: int = reg(UC_X86_REG_CR2)
+    cr3: int = reg(UC_X86_REG_CR3)
+    cr4: int = reg(UC_X86_REG_CR4)
 
     # Flags
     flags: int = reg(UC_X86_REG_EFLAGS)
