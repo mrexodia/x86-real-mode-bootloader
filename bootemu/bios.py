@@ -428,7 +428,18 @@ def handle_int10(emu: "BootloaderEmulator"):
     """Handle INT 0x10 - Video Services"""
     ah = (emu.regs.ax >> 8) & 0xFF
 
-    if ah == 0x00:
+    if ah == 0x01:
+        # Set Cursor Shape (Text Modes)
+        ch = (emu.regs.cx >> 8) & 0xFF  # Start scan line
+        cl = emu.regs.cx & 0xFF  # End scan line
+        emu.log.interrupt(
+            f"[INT 0x10] Set cursor shape: start={ch}, end={cl}"
+        )
+        if emu.bda:
+            emu.bda.cursor_shape = emu.regs.cx
+            emu.write_bda_to_memory()
+
+    elif ah == 0x00:
         # Set video mode
         al = emu.regs.ax & 0xFF
         emu.log.interrupt(f"[INT 0x10] Set video mode: 0x{al:02x}")
@@ -489,6 +500,95 @@ def handle_int10(emu: "BootloaderEmulator"):
             # Default if BDA not available
             emu.regs.dx = 0x0000
             emu.regs.cx = 0x0607  # Default cursor shape
+
+    elif ah == 0x05:
+        # Select Active Display Page
+        al = emu.regs.ax & 0xFF
+        emu.log.interrupt(f"[INT 0x10] Select active display page: {al}")
+        if emu.bda:
+            emu.bda.active_page = al
+            emu.write_bda_to_memory()
+
+    elif ah == 0x06:
+        # Scroll Window Up
+        al = emu.regs.ax & 0xFF  # Lines to scroll (0 = clear)
+        bh = (emu.regs.bx >> 8) & 0xFF  # Attribute for blank lines
+        ch = (emu.regs.cx >> 8) & 0xFF  # Upper row
+        cl = emu.regs.cx & 0xFF  # Left column
+        dh = (emu.regs.dx >> 8) & 0xFF  # Lower row
+        dl = emu.regs.dx & 0xFF  # Right column
+        emu.log.interrupt(
+            f"[INT 0x10] Scroll window up: lines={al}, attr=0x{bh:02x}, "
+            f"top-left=({ch},{cl}), bottom-right=({dh},{dl})"
+        )
+        # No-op for emulator - just acknowledge
+
+    elif ah == 0x07:
+        # Scroll Window Down
+        al = emu.regs.ax & 0xFF
+        bh = (emu.regs.bx >> 8) & 0xFF
+        ch = (emu.regs.cx >> 8) & 0xFF
+        cl = emu.regs.cx & 0xFF
+        dh = (emu.regs.dx >> 8) & 0xFF
+        dl = emu.regs.dx & 0xFF
+        emu.log.interrupt(
+            f"[INT 0x10] Scroll window down: lines={al}, attr=0x{bh:02x}, "
+            f"top-left=({ch},{cl}), bottom-right=({dh},{dl})"
+        )
+        # No-op for emulator - just acknowledge
+
+    elif ah == 0x08:
+        # Read Character and Attribute at Cursor Position
+        bh = (emu.regs.bx >> 8) & 0xFF  # Page number
+        emu.log.interrupt(f"[INT 0x10] Read character at cursor: page={bh}")
+        # Return space character with default attribute
+        emu.regs.ax = 0x0720  # AH=attribute (07=white on black), AL=space (0x20)
+
+    elif ah == 0x09:
+        # Write Character and Attribute at Cursor Position
+        al = emu.regs.ax & 0xFF  # Character
+        bh = (emu.regs.bx >> 8) & 0xFF  # Page number
+        bl = emu.regs.bx & 0xFF  # Attribute
+        cx = emu.regs.cx  # Repetition count
+        char = chr(al) if 32 <= al < 127 else f"\\x{al:02x}"
+        emu.log.interrupt(
+            f"[INT 0x10] Write char+attr: '{char}' attr=0x{bl:02x} count={cx} page={bh}"
+        )
+        # Append character to screen output (once, not repeated)
+        if 32 <= al < 127:
+            emu.screen_output += chr(al)
+        # Update cursor position
+        if emu.bda and bh < 8:
+            cursor_pos = emu.bda.cursor_pos[bh]
+            col = (cursor_pos & 0xFF) + cx
+            row = (cursor_pos >> 8) & 0xFF
+            if col >= 80:
+                row += col // 80
+                col = col % 80
+            emu.bda.cursor_pos[bh] = (row << 8) | col
+            emu.write_bda_to_memory()
+
+    elif ah == 0x0A:
+        # Write Character Only at Cursor Position
+        al = emu.regs.ax & 0xFF  # Character
+        bh = (emu.regs.bx >> 8) & 0xFF  # Page number
+        cx = emu.regs.cx  # Repetition count
+        char = chr(al) if 32 <= al < 127 else f"\\x{al:02x}"
+        emu.log.interrupt(
+            f"[INT 0x10] Write char only: '{char}' count={cx} page={bh}"
+        )
+        if 32 <= al < 127:
+            emu.screen_output += chr(al)
+        # Update cursor position
+        if emu.bda and bh < 8:
+            cursor_pos = emu.bda.cursor_pos[bh]
+            col = (cursor_pos & 0xFF) + cx
+            row = (cursor_pos >> 8) & 0xFF
+            if col >= 80:
+                row += col // 80
+                col = col % 80
+            emu.bda.cursor_pos[bh] = (row << 8) | col
+            emu.write_bda_to_memory()
 
     elif ah == 0x0E:
         # Teletype output
@@ -559,6 +659,154 @@ def handle_int10(emu: "BootloaderEmulator"):
             # Other BL values - return error
             flags = emu.regs.flags
             emu.regs.flags = flags | 0x0001  # Set CF (error)
+
+    elif ah == 0x11:
+        # Character Generator Functions (EGA/VGA)
+        al = emu.regs.ax & 0xFF
+        bl = emu.regs.bx & 0xFF
+        emu.log.interrupt(
+            f"[INT 0x10] Character Generator: AL=0x{al:02x}, BL=0x{bl:02x}"
+        )
+        # Stub - just acknowledge, clear CF
+        flags = emu.regs.flags
+        emu.regs.flags = flags & ~0x0001
+        emu.log.interrupt("  - Stub handler: success (no-op)")
+
+    elif ah == 0x12:
+        # VGA Alternate Select (EGA/VGA)
+        bl = emu.regs.bx & 0xFF
+        emu.log.interrupt(
+            f"[INT 0x10] VGA Alternate Select: BL=0x{bl:02x}"
+        )
+
+        if bl == 0x10:
+            # Return EGA/VGA Information
+            # BH=0 (color mode, 0=mono), BL=0 (64K EGA memory installed)
+            # CH=feature bits, CL=switches
+            emu.regs.bx = (emu.regs.bx & 0xFF00) | 0x0003  # BH=0 (color), BL=3 (256K)
+            emu.regs.cx = 0x0000  # CH=feature bits, CL=switches
+            emu.regs.ax = (emu.regs.ax & 0xFF00) | 0x12  # AL=0x12 (function supported)
+            # Clear CF (success)
+            flags = emu.regs.flags
+            emu.regs.flags = flags & ~0x0001
+            emu.log.interrupt(
+                "  - Returning EGA info: BH=0 (color), BL=3 (256K), CH=0, CL=0"
+            )
+        elif bl == 0x20:
+            # Select Alternate Print Screen routine
+            # Just acknowledge - no register changes needed
+            emu.log.interrupt("  - Alternate print screen selected")
+        elif bl == 0x30:
+            # Select vertical resolution for text modes
+            al_select = emu.regs.ax & 0xFF  # AL=0 (200), 1 (350), 2 (400)
+            emu.regs.ax = (emu.regs.ax & 0xFF00) | 0x12  # AL=0x12 (supported)
+            # Clear CF (success)
+            flags = emu.regs.flags
+            emu.regs.flags = flags & ~0x0001
+            emu.log.interrupt(
+                f"  - Vertical resolution select: AL={al_select}"
+            )
+        elif bl == 0x31:
+            # Default palette loading on mode set
+            al_select = emu.regs.ax & 0xFF  # AL=0 (enable), 1 (disable)
+            emu.regs.ax = (emu.regs.ax & 0xFF00) | 0x12  # AL=0x12 (supported)
+            # Clear CF (success)
+            flags = emu.regs.flags
+            emu.regs.flags = flags & ~0x0001
+            emu.log.interrupt(
+                f"  - Palette loading on mode set: AL={al_select}"
+            )
+        elif bl == 0x32:
+            # Video addressing enable/disable
+            al_select = emu.regs.ax & 0xFF  # AL=0 (enable), 1 (disable)
+            emu.regs.ax = (emu.regs.ax & 0xFF00) | 0x12
+            flags = emu.regs.flags
+            emu.regs.flags = flags & ~0x0001
+            emu.log.interrupt(
+                f"  - Video addressing: AL={al_select}"
+            )
+        elif bl == 0x33:
+            # Gray-scale summing enable/disable
+            al_select = emu.regs.ax & 0xFF  # AL=0 (enable), 1 (disable)
+            emu.regs.ax = (emu.regs.ax & 0xFF00) | 0x12
+            flags = emu.regs.flags
+            emu.regs.flags = flags & ~0x0001
+            emu.log.interrupt(
+                f"  - Gray-scale summing: AL={al_select}"
+            )
+        elif bl == 0x34:
+            # Cursor emulation enable/disable
+            al_select = emu.regs.ax & 0xFF  # AL=0 (enable), 1 (disable)
+            emu.regs.ax = (emu.regs.ax & 0xFF00) | 0x12
+            flags = emu.regs.flags
+            emu.regs.flags = flags & ~0x0001
+            emu.log.interrupt(
+                f"  - Cursor emulation: AL={al_select}"
+            )
+        elif bl == 0x35:
+            # Display switch (select active display)
+            al_select = emu.regs.ax & 0xFF
+            emu.regs.ax = (emu.regs.ax & 0xFF00) | 0x12
+            flags = emu.regs.flags
+            emu.regs.flags = flags & ~0x0001
+            emu.log.interrupt(
+                f"  - Display switch: AL={al_select}"
+            )
+        else:
+            # Unknown BL sub-function - treat as no-op success
+            emu.regs.ax = (emu.regs.ax & 0xFF00) | 0x12
+            flags = emu.regs.flags
+            emu.regs.flags = flags & ~0x0001
+            emu.log.interrupt(
+                f"  - Unknown BL=0x{bl:02x}, returning success"
+            )
+
+    elif ah == 0x13:
+        # Write String in Teletype Mode
+        al = emu.regs.ax & 0xFF
+        bh = (emu.regs.bx >> 8) & 0xFF  # Page number
+        bl = emu.regs.bx & 0xFF  # Attribute (AL=0) or color (AL=1)
+        cx = emu.regs.cx  # Character count
+        dh = (emu.regs.dx >> 8) & 0xFF  # Row
+        dl = emu.regs.dx & 0xFF  # Column
+        es = emu.regs.es
+        bp_val = emu.regs.bp
+        emu.log.interrupt(
+            f"[INT 0x10] Write String: AL=0x{al:02x}, page={bh}, count={cx}, row={dh}, col={dl}"
+        )
+        # Try to read the string from ES:BP
+        try:
+            string_addr = (es << 4) + bp_val
+            raw = emu.mem_read(string_addr, cx * 2 if al == 0 else cx)
+            if al == 0:
+                # Character+attribute pairs, just extract chars
+                chars = bytes(raw[::2])
+            else:
+                chars = bytes(raw)
+            text = chars.decode('ascii', errors='replace')
+            emu.screen_output += text
+            emu.log.interrupt(f"  - String: {repr(text[:80])}")
+        except Exception:
+            emu.log.interrupt("  - Could not read string data")
+        # Update cursor position after write
+        new_col = dl + cx
+        new_row = dh
+        if new_col >= 80:
+            new_row += new_col // 80
+            new_col = new_col % 80
+        emu.regs.dx = (new_row << 8) | new_col
+
+    elif ah in (0x20, 0x21, 0x22):
+        # Non-standard / EGA/VGA extensions sometimes used by boot managers
+        # AH=0x20: Set Display Combination (some BIOSes) or alternate select sub-function
+        # AH=0x21: Set User Character Table Pointer (some implementations)
+        # AH=0x22: Set alternate character table
+        # Treat as no-op success
+        emu.log.interrupt(
+            f"[INT 0x10] EGA/VGA extension AH=0x{ah:02x}, AL=0x{emu.regs.ax & 0xFF:02x} (stub)"
+        )
+        flags = emu.regs.flags
+        emu.regs.flags = flags & ~0x0001  # Clear CF (success)
 
     else:
         emu.log.interrupt(f"[INT 0x10] Unhandled function AH=0x{ah:02x}")
